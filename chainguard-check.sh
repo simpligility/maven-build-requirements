@@ -58,7 +58,24 @@ output "Project: $(pwd)"
 output "======================================================================="
 output ""
 
-# ── Step 4 & 5: Run chainctl for each artifact, collect by scope ─────────────
+# ── Step 4: Log resolved dependencies ────────────────────────────────────────
+output "Resolved dependencies:"
+output ""
+while IFS= read -r line; do
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    [[ -z "$line" ]] && continue
+    line=$(echo "$line" | sed 's/\x1b\[[0-9;]*m//g' | sed 's/ -- module .*$//')
+    IFS=':' read -ra parts <<< "$line"
+    [[ ${#parts[@]} -lt 6 ]] && continue
+    output "  ${parts[0]}:${parts[1]}:${parts[3]}"
+    output "  ${parts[5]}"
+    output ""
+done < "$DEPS_TEMP"
+output "======================================================================="
+output ""
+
+# ── Step 5 & 6: Run chainctl for each artifact, collect by scope ─────────────
 declare -A seen_scopes
 total=0
 covered=0
