@@ -1,0 +1,27 @@
+# Maven build output
+target/
+pom.xml.tag
+pom.xml.releaseBackup
+pom.xml.versionsBackup
+pom.xml.next
+release.properties
+dependency-reduced-pom.xml
+buildNumber.properties
+.mvn/timing.properties
+.mvn/wrapper/maven-wrapper.jar
+
+# Chainguard check output (generated at runtime)
+chainguard-check-results.txt
+test-projects/**/chainguard-check.sh
+
+# IDE files
+.idea/
+*.iml
+.eclipse/
+.settings/
+.project
+.classpath
+*.class
+
+# OS
+.DS_Store
