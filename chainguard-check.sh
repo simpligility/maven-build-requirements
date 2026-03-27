@@ -1,5 +1,12 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
+
+# Require bash 4+ for associative array support
+if [[ "${BASH_VERSINFO[0]}" -lt 4 ]]; then
+    echo "Error: bash 4 or higher is required (found bash ${BASH_VERSION})." >&2
+    echo "On macOS, install a newer bash via Homebrew: brew install bash" >&2
+    exit 1
+fi
 
 RESULTS_FILE="chainguard-check-results.txt"
 DEPS_TEMP=$(mktemp)
