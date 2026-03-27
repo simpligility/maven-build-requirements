@@ -10,6 +10,7 @@ fi
 
 RESULTS_FILE="chainguard-check-results.txt"
 DEPS_TEMP=$(mktemp)
+PROJECT_MODULES_FILE=$(mktemp)
 
 # Writes to both stdout and results file
 output() {
@@ -33,8 +34,21 @@ if [[ "$answer" != "y" && "$answer" != "Y" ]]; then
     fi
 fi
 
-# ── Step 2: Resolve dependency list with absolute paths ──────────────────────
+# ── Step 2: Collect reactor module coordinates to exclude from analysis ───────
 echo ""
+echo "Collecting project module coordinates..."
+# Get root module coordinates via Maven (correctly handles parent inheritance)
+root_gid=$(mvn -q -N help:evaluate -Dexpression=project.groupId -DforceStdout 2>/dev/null)
+root_aid=$(mvn -q -N help:evaluate -Dexpression=project.artifactId -DforceStdout 2>/dev/null)
+root_ver=$(mvn -q -N help:evaluate -Dexpression=project.version -DforceStdout 2>/dev/null)
+echo "${root_gid}:${root_aid}:${root_ver}" >> "$PROJECT_MODULES_FILE"
+# Sub-modules declare their own artifactId but inherit groupId and version from root
+while IFS= read -r pomfile; do
+    aid=$(grep -m1 '<artifactId>' "$pomfile" | sed 's|.*<artifactId>\([^<]*\)</artifactId>.*|\1|' | tr -d ' \t')
+    [[ -n "$aid" ]] && echo "${root_gid}:${aid}:${root_ver}" >> "$PROJECT_MODULES_FILE"
+done < <(find . -name "pom.xml" -not -path "*/target/*" -not -path "./pom.xml")
+
+# ── Step 3: Resolve dependency list with absolute paths ──────────────────────
 echo "Resolving dependencies..."
 mvn dependency:list -DoutputAbsoluteArtifactFilename=true -DoutputFile="$DEPS_TEMP" -q
 
@@ -44,7 +58,7 @@ output "Project: $(pwd)"
 output "======================================================================="
 output ""
 
-# ── Step 3 & 4: Run chainctl for each artifact, collect by scope ─────────────
+# ── Step 4 & 5: Run chainctl for each artifact, collect by scope ─────────────
 declare -A seen_scopes
 total=0
 covered=0
@@ -70,11 +84,18 @@ while IFS= read -r line; do
     jar_path="${parts[5]}"
 
     coords="${group_id}:${artifact_id}:${version}"
+
+    # Skip artifacts that are part of this project's own reactor
+    if grep -qxF "$coords" "$PROJECT_MODULES_FILE" 2>/dev/null; then
+        continue
+    fi
+
     total=$((total + 1))
 
     if [[ ! -f "$jar_path" ]]; then
         result_line="  ${coords} => NOT FOUND in local cache"
     else
+        output "Running chainctl libraries verify ${jar_path}"
         chainctl_out=$(chainctl libraries verify "$jar_path" 2>&1 | sed 's/\x1b\[[0-9;]*m//g' || true)
         percentage=$(echo "$chainctl_out" | grep -oE '[0-9]+\.[0-9]+%' | tail -1)
         if [[ -z "$percentage" ]]; then
@@ -126,4 +147,4 @@ output "======================================================================="
 output ""
 output "Full results saved to: ${RESULTS_FILE}"
 
-rm -f "$DEPS_TEMP"
+rm -f "$DEPS_TEMP" "$PROJECT_MODULES_FILE"
