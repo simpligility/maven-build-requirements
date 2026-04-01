@@ -12,6 +12,7 @@ buildNumber.properties
 
 # Chainguard check output (generated at runtime)
 chainguard-check-results.txt
+chainguard-check-java-results.txt
 test-projects/**/chainguard-check.sh
 
 # IDE files
