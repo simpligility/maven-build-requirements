@@ -1,3 +1,34 @@
+# Status report — 2026-04-24
+
+## Java implementation: `maven-chainguard-checker/`
+
+### Completed this session
+
+- **Two-step confirmation gate** (commit `698fbb3`) — splits execution into analysis and
+  chainctl verification phases. Between phases, the user is prompted twice before chainctl
+  runs begin. If the user declines at either prompt, analysis results are saved and the tool
+  exits cleanly. `--yes` / `-y` flag skips both prompts for scripted/CI use.
+  - When no interactive terminal is detected (`System.console() == null`), both prompts
+    auto-proceed so CI pipelines are not blocked.
+  - Tested against `multi-module-example`: 19 artifacts, 4 at 100%, 21% overall.
+
+### Next step planned (not yet started)
+
+Expand the analysis phase to also collect all Maven plugins declared in the project.
+
+- Use `MavenXpp3Reader` (from `org.apache.maven:maven-model`) to parse each pom.xml into a
+  typed `Model` object — this enables walking `model.getBuild().getPlugins()` and
+  `model.getBuild().getPluginManagement().getPlugins()` instead of raw DOM.
+- Collect unique plugins (by G:A) across all reactor modules, resolving version property
+  expressions using the existing `properties` map.
+- Print plugin list in the analysis phase output.
+- **Second later step**: resolve each plugin's transitive dependencies and add them to the
+  artifact list for chainctl verification.
+- `maven-model` is likely already transitively available via mima/toolbox; add as explicit
+  compile dependency to be safe.
+
+---
+
 # Status report — 2026-04-01
 
 ## Java implementation: `maven-chainguard-checker/`
