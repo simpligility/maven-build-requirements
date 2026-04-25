@@ -21,6 +21,7 @@ import picocli.CommandLine.Option;
 
 import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
+import java.io.Console;
 import java.io.File;
 import java.io.IOException;
 import java.io.PrintWriter;
@@ -55,6 +56,10 @@ public class ChainguardChecker implements Callable<Integer> {
     @Option(names = {"-o", "--output"},
             description = "Output file (default: chainguard-check-java-results.txt)")
     private Path outputFile = Paths.get("chainguard-check-java-results.txt");
+
+    @Option(names = {"-y", "--yes"},
+            description = "Skip confirmation prompts and proceed automatically")
+    private boolean autoConfirm = false;
 
     private static final Pattern PERCENTAGE_PATTERN = Pattern.compile("[0-9]+\\.[0-9]+%");
     private static final Pattern ANSI_PATTERN = Pattern.compile("\u001B\\[[0-9;]*m");
@@ -274,6 +279,18 @@ public class ChainguardChecker implements Callable<Integer> {
             print("=======================================================================");
             print("");
 
+            // ── Confirmation before chainctl ──────────────────────────────────
+            int artifactCount = byScope.values().stream().mapToInt(Map::size).sum();
+            print("Found " + artifactCount + " artifact(s) to verify.");
+            print("");
+
+            if (!confirmProceed(artifactCount)) {
+                print("Verification skipped. Analysis results saved to: " + outputFile.toAbsolutePath());
+                writer.close();
+                return 0;
+            }
+            print("");
+
             // ── Step 4: Run chainctl and collect results by scope ─────────────
             int total = 0;
             int covered = 0;
@@ -320,6 +337,30 @@ public class ChainguardChecker implements Callable<Integer> {
 
         writer.close();
         return 0;
+    }
+
+    private boolean confirmProceed(int artifactCount) {
+        if (autoConfirm) return true;
+
+        if (!askYesNo("Proceed with chainctl verification?")) return false;
+
+        System.out.println("Warning: verifying " + artifactCount
+                + " artifact(s) may take several minutes.");
+        return askYesNo("Are you sure you want to continue?");
+    }
+
+    private boolean askYesNo(String prompt) {
+        System.out.print(prompt + " (y/n): ");
+        System.out.flush();
+        Console console = System.console();
+        if (console == null) {
+            // No interactive terminal — auto-proceed so scripted runs are not blocked
+            System.out.println("y [no interactive terminal, proceeding automatically]");
+            return true;
+        }
+        String response = console.readLine();
+        return response != null
+                && (response.equalsIgnoreCase("y") || response.equalsIgnoreCase("yes"));
     }
 
     private String runChainctl(File jarFile) throws IOException, InterruptedException {
