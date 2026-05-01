@@ -1,3 +1,86 @@
+# Status report — 2026-05-01
+
+## Java implementation: `maven-chainguard-checker/`
+
+### Completed this session
+
+**Fix: BOM-managed dependency resolution (commit `f73e25f`)**
+
+The DOM-based Pass 2 could not follow `scope=import` BOM entries in
+`<dependencyManagement>`, leaving projects like `quickstart-example` (uses
+`junit-bom`) and `spring-boot-example` (uses `spring-boot-dependencies`) with
+zero resolved dependencies.
+
+Fix: build the effective POM model *before* the transitive resolution step.
+`effectiveModel.getDependencies()` returns direct deps with BOM-managed versions
+already resolved. These are used as the `CollectRequest` seeds; the DOM-parsed
+`uniqueDeps` is kept as a fallback for multi-module projects where the root
+effective model has no direct deps of its own.
+
+Results: `quickstart-example` 0 → 5 deps; `spring-boot-example` 0 → 100 deps.
+
+---
+
+**`--verify` flag makes chainctl opt-in (commit `f73e25f`)**
+
+Default run now just resolves and prints the full artifact list, then exits.
+`chainctl libraries verify` is only triggered with `--verify`. `--yes` still
+skips the two-step confirmation prompt when `--verify` is active.
+
+---
+
+**Artifact coordinates include type/extension and classifier (commit `97b0bc3`)**
+
+Added `artifactCoords(Artifact)` helper. Format is `g:a:type:version` (or
+`g:a:type:classifier:version` when a classifier is present). All five artifact
+maps and every line of output now use this format.
+
+---
+
+**Plugin full dependency tree and parent POMs (commit `bb55501`)**
+
+For each resolved plugin, call `MavenModelReader.readModel()` with
+`ModelRequest.builder().setArtifact(pluginPomArtifact)` to load the plugin's
+effective model from the repository (no local pom.xml needed). From the
+response:
+- `getLineage()` → plugin parent POMs (deduplicated against project parent POMs)
+- `getEffectiveModel().getDependencies()` → seeds a per-plugin `CollectRequest`
+  for the full transitive dependency tree
+
+Results appear as two new sections: **Plugin parent POMs** and **Plugin
+dependencies**. Plugin JARs already listed in Plugins are excluded from Plugin
+dependencies to avoid double-counting.
+
+---
+
+**Sorted deduplicated artifact coordinates output file (commit `8516ace`)**
+
+A `TreeSet<String>` is populated on the fly as each artifact is resolved across
+all five categories. Written to `chainguard-check-java-coords.txt` (alongside
+the main results file) after all resolution is complete — one coordinate per
+line, alphabetically sorted, deduplicated.
+
+---
+
+### Test results (2026-05-01)
+
+| Project | Project deps | Project parent POMs | Plugins | Plugin parent POMs | Plugin deps | Total |
+|---------|-------------|---------------------|---------|-------------------|-------------|-------|
+| `quickstart-example` | 5 | 0 | 13 | 17 | 399 | 434 |
+| `multi-module-example` | 19 | 0 | 4 | 12 | 216 | 251 |
+| `spring-boot-example` | 100 | 2 | 30 | 28 | 618 | 778 |
+
+Output files per project:
+- `chainguard-check-java-results.txt` — human-readable full report
+- `chainguard-check-java-coords.txt` — sorted, deduplicated coordinate list
+
+### Next steps
+
+- Sub-module effective models (requires reactor root installed to local repo)
+- `--verbose` / `--detailed` chainctl passthrough flags
+
+---
+
 # Status report — 2026-04-30
 
 ## Java implementation: `maven-chainguard-checker/`
