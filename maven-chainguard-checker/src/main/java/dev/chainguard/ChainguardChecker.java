@@ -376,6 +376,87 @@ public class ChainguardChecker implements Callable<Integer> {
                 }
             }
 
+            // ── 2d: Load plugin dependency trees via MMR ─────────────────────
+            print("Loading plugin dependency trees...");
+            Map<String, Artifact> resolvedPluginDeps = new LinkedHashMap<>();
+            List<DefaultArtifact> pluginParentPomCandidates = new ArrayList<>();
+
+            for (Map.Entry<String, DefaultArtifact> pluginEntry : pluginCandidates.entrySet()) {
+                DefaultArtifact pluginArtifact = pluginEntry.getValue();
+                DefaultArtifact pluginPomArtifact = new DefaultArtifact(
+                        pluginArtifact.getGroupId(), pluginArtifact.getArtifactId(),
+                        "pom", pluginArtifact.getVersion());
+                try {
+                    ModelResponse pluginResponse = modelReader.readModel(
+                            ModelRequest.builder().setArtifact(pluginPomArtifact).build());
+                    Model pluginEffective = pluginResponse.getEffectiveModel();
+
+                    String pluginGav = pluginArtifact.getGroupId() + ":"
+                            + pluginArtifact.getArtifactId() + ":" + pluginArtifact.getVersion();
+                    for (String modelId : pluginResponse.getLineage()) {
+                        if (isBlank(modelId) || modelId.equals(pluginGav)) continue;
+                        String[] parts = modelId.split(":");
+                        if (parts.length != 3) continue;
+                        String g = parts[0], a = parts[1], v = parts[2];
+                        if (isBlank(g) || isBlank(a) || isBlank(v)) continue;
+                        pluginParentPomCandidates.add(new DefaultArtifact(g, a, "pom", v));
+                    }
+
+                    List<Dependency> pluginDirectDeps = new ArrayList<>();
+                    for (org.apache.maven.model.Dependency d : pluginEffective.getDependencies()) {
+                        String g = d.getGroupId(), a = d.getArtifactId(), v = d.getVersion();
+                        String scope = isBlank(d.getScope()) ? "compile" : d.getScope();
+                        String type = isBlank(d.getType()) ? "jar" : d.getType();
+                        if (isBlank(g) || isBlank(a) || isBlank(v)) continue;
+                        if ("import".equals(scope)) continue;
+                        pluginDirectDeps.add(new Dependency(new DefaultArtifact(g, a, type, v), scope));
+                    }
+                    if (!pluginDirectDeps.isEmpty()) {
+                        CollectRequest pluginCollect = new CollectRequest();
+                        pluginCollect.setDependencies(pluginDirectDeps);
+                        pluginCollect.setRepositories(context.remoteRepositories());
+                        CollectResult pluginCollectResult = context.repositorySystem()
+                                .collectDependencies(context.repositorySystemSession(), pluginCollect);
+                        context.repositorySystem().resolveDependencies(context.repositorySystemSession(),
+                                new DependencyRequest(pluginCollectResult.getRoot(), null));
+                        PreorderNodeListGenerator pluginNlg = new PreorderNodeListGenerator();
+                        pluginCollectResult.getRoot().accept(pluginNlg);
+                        for (DependencyNode depNode : pluginNlg.getNodes()) {
+                            if (depNode.getDependency() == null) continue;
+                            Artifact depArtifact = depNode.getArtifact();
+                            String reactorKey = depArtifact.getGroupId() + ":"
+                                    + depArtifact.getArtifactId() + ":" + depArtifact.getVersion();
+                            if (reactorCoords.contains(reactorKey)) continue;
+                            String depCoords = artifactCoords(depArtifact);
+                            if (!resolvedPlugins.containsKey(depCoords)) {
+                                resolvedPluginDeps.putIfAbsent(depCoords, depArtifact);
+                            }
+                        }
+                    }
+                } catch (Exception e) {
+                    print("  Warning: could not load plugin model for "
+                            + pluginEntry.getKey() + ": " + e.getMessage());
+                }
+            }
+
+            Map<String, Artifact> resolvedPluginParentPoms = new LinkedHashMap<>();
+            for (DefaultArtifact candidate : pluginParentPomCandidates) {
+                String coords = artifactCoords(candidate);
+                if (resolvedPluginParentPoms.containsKey(coords)) continue;
+                if (resolvedParentPoms.containsKey(coords)) continue;
+                try {
+                    ArtifactRequest req = new ArtifactRequest(candidate, context.remoteRepositories(), null);
+                    ArtifactResult result = context.repositorySystem()
+                            .resolveArtifact(context.repositorySystemSession(), req);
+                    resolvedPluginParentPoms.put(coords, result.getArtifact());
+                } catch (Exception e) {
+                    print("  Warning: could not resolve plugin parent POM " + coords + ": " + e.getMessage());
+                }
+            }
+            print("  Plugin trees loaded — " + resolvedPluginDeps.size() + " dep(s), "
+                    + resolvedPluginParentPoms.size() + " plugin parent POM(s).");
+            print("");
+
             // ── Step 3: Print resolved artifact lists ─────────────────────────
             print("Resolved dependencies:");
             print("");
@@ -410,15 +491,40 @@ public class ChainguardChecker implements Callable<Integer> {
                 }
             }
 
+            if (!resolvedPluginParentPoms.isEmpty()) {
+                print("Plugin parent POMs:");
+                print("");
+                for (Map.Entry<String, Artifact> e : resolvedPluginParentPoms.entrySet()) {
+                    print("  " + e.getKey());
+                    File file = e.getValue().getFile();
+                    print("  " + (file != null ? file.getAbsolutePath() : "NOT FOUND in local cache"));
+                    print("");
+                }
+            }
+
+            if (!resolvedPluginDeps.isEmpty()) {
+                print("Plugin dependencies:");
+                print("");
+                for (Map.Entry<String, Artifact> e : resolvedPluginDeps.entrySet()) {
+                    print("  " + e.getKey());
+                    File file = e.getValue().getFile();
+                    print("  " + (file != null ? file.getAbsolutePath() : "NOT FOUND in local cache"));
+                    print("");
+                }
+            }
+
             print("=======================================================================");
             print("");
 
             int depCount = byScope.values().stream().mapToInt(Map::size).sum();
-            int artifactCount = depCount + resolvedParentPoms.size() + resolvedPlugins.size();
+            int artifactCount = depCount + resolvedParentPoms.size() + resolvedPlugins.size()
+                    + resolvedPluginParentPoms.size() + resolvedPluginDeps.size();
             print("Found " + artifactCount + " artifact(s) to verify"
-                    + " (" + depCount + " dependencies, "
-                    + resolvedParentPoms.size() + " parent POMs, "
-                    + resolvedPlugins.size() + " plugins).");
+                    + " (" + depCount + " project deps, "
+                    + resolvedParentPoms.size() + " project parent POMs, "
+                    + resolvedPlugins.size() + " plugins, "
+                    + resolvedPluginParentPoms.size() + " plugin parent POMs, "
+                    + resolvedPluginDeps.size() + " plugin deps).");
             print("");
 
             if (!runVerify) {
@@ -479,6 +585,28 @@ public class ChainguardChecker implements Callable<Integer> {
             if (!resolvedPlugins.isEmpty()) {
                 print("=== plugins ===");
                 for (Map.Entry<String, Artifact> e : resolvedPlugins.entrySet()) {
+                    total++;
+                    String pct = runChainctl(e.getValue().getFile());
+                    if ("100.00%".equals(pct)) covered++;
+                    print("  " + e.getKey() + " => " + pct);
+                }
+                print("");
+            }
+
+            if (!resolvedPluginParentPoms.isEmpty()) {
+                print("=== plugin-parent-poms ===");
+                for (Map.Entry<String, Artifact> e : resolvedPluginParentPoms.entrySet()) {
+                    total++;
+                    String pct = runChainctl(e.getValue().getFile());
+                    if ("100.00%".equals(pct)) covered++;
+                    print("  " + e.getKey() + " => " + pct);
+                }
+                print("");
+            }
+
+            if (!resolvedPluginDeps.isEmpty()) {
+                print("=== plugin-dependencies ===");
+                for (Map.Entry<String, Artifact> e : resolvedPluginDeps.entrySet()) {
                     total++;
                     String pct = runChainctl(e.getValue().getFile());
                     if ("100.00%".equals(pct)) covered++;
