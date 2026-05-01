@@ -324,11 +324,11 @@ public class ChainguardChecker implements Callable<Integer> {
                 if (node.getDependency() == null) continue;
                 Artifact artifact = node.getArtifact();
                 String scope = node.getDependency().getScope();
-                String coords = artifact.getGroupId() + ":" + artifact.getArtifactId()
+                String reactorKey = artifact.getGroupId() + ":" + artifact.getArtifactId()
                         + ":" + artifact.getVersion();
-                if (reactorCoords.contains(coords)) continue;
+                if (reactorCoords.contains(reactorKey)) continue;
                 byScope.computeIfAbsent(scope, k -> new LinkedHashMap<>())
-                        .putIfAbsent(coords, artifact);
+                        .putIfAbsent(artifactCoords(artifact), artifact);
             }
 
             // Also scan sub-module poms for any explicitly versioned plugins that might not
@@ -351,8 +351,7 @@ public class ChainguardChecker implements Callable<Integer> {
             // ── 2c: Resolve parent POM files and plugin JARs ─────────────────
             Map<String, Artifact> resolvedParentPoms = new LinkedHashMap<>();
             for (DefaultArtifact candidate : parentPomCandidates) {
-                String coords = candidate.getGroupId() + ":" + candidate.getArtifactId()
-                        + ":" + candidate.getVersion();
+                String coords = artifactCoords(candidate);
                 try {
                     ArtifactRequest req = new ArtifactRequest(candidate, context.remoteRepositories(), null);
                     ArtifactResult result = context.repositorySystem()
@@ -366,8 +365,7 @@ public class ChainguardChecker implements Callable<Integer> {
             Map<String, Artifact> resolvedPlugins = new LinkedHashMap<>();
             for (Map.Entry<String, DefaultArtifact> entry : pluginCandidates.entrySet()) {
                 DefaultArtifact candidate = entry.getValue();
-                String coords = candidate.getGroupId() + ":" + candidate.getArtifactId()
-                        + ":" + candidate.getVersion();
+                String coords = artifactCoords(candidate);
                 try {
                     ArtifactRequest req = new ArtifactRequest(candidate, context.remoteRepositories(), null);
                     ArtifactResult result = context.repositorySystem()
@@ -600,6 +598,20 @@ public class ChainguardChecker implements Callable<Integer> {
             }
         }
         return null;
+    }
+
+    private String artifactCoords(Artifact artifact) {
+        String ext = artifact.getExtension();
+        String classifier = artifact.getClassifier();
+        StringBuilder sb = new StringBuilder();
+        sb.append(artifact.getGroupId()).append(':')
+          .append(artifact.getArtifactId()).append(':')
+          .append(isBlank(ext) ? "jar" : ext);
+        if (!isBlank(classifier)) {
+            sb.append(':').append(classifier);
+        }
+        sb.append(':').append(artifact.getVersion());
+        return sb.toString();
     }
 
     private boolean isBlank(String s) {
