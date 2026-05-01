@@ -45,6 +45,18 @@
             <artifactId>picocli</artifactId>
             <version>4.7.7</version>
         </dependency>
+        <!-- MMR extension: builds effective POM models including parent inheritance and plugin management -->
+        <dependency>
+            <groupId>eu.maveniverse.maven.mima.extensions</groupId>
+            <artifactId>mmr</artifactId>
+            <version>${mima.version}</version>
+        </dependency>
+        <!-- Maven model API: Build, Model, Plugin, PluginManagement (brought in at runtime by mima, needed at compile) -->
+        <dependency>
+            <groupId>org.apache.maven</groupId>
+            <artifactId>maven-model</artifactId>
+            <version>3.9.9</version>
+        </dependency>
         <!-- Required by mima standalone-static: XML parsing split from plexus-utils in Maven 3.9+ -->
         <dependency>
             <groupId>org.codehaus.plexus</groupId>

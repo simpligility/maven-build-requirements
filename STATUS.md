@@ -1,3 +1,64 @@
+# Status report — 2026-04-30
+
+## Java implementation: `maven-chainguard-checker/`
+
+### Completed this session
+
+**Effective POM model for plugin and parent POM discovery**
+
+Replaced the DOM-based Pass 3 (which could only see plugins declared with explicit versions in
+local pom.xml files) with a proper effective POM computation using the
+`eu.maveniverse.maven.mima.extensions:mmr` extension (`MavenModelReader`).
+
+**How it works:**
+- After the mima `Context` is opened, `MavenModelReader(context)` is instantiated.
+- `reader.readModel(ModelRequest.builder().setPomFile(rootPom).build())` builds the full
+  effective model for the root pom — resolving the entire parent chain exactly as
+  `mvn help:effective-pom` does (via `ModelBuilder` + `ModelResolverImpl` wired through mima).
+- Plugins are collected from `effectiveModel.getBuild().getPluginManagement().getPlugins()`
+  (the full merged plugin management from all parents — always has resolved versions) and
+  supplemented by `effectiveModel.getBuild().getPlugins()` for any with explicit versions.
+- Parent POMs are taken from `response.getLineage()`, filtering out reactor module coords and
+  the empty-string super POM entry.
+- Sub-module pom files are still DOM-scanned for any explicitly-versioned plugins unique to
+  those modules (DOM fallback uses `putIfAbsent` so effective model entries take priority).
+
+**New compile dependencies added to `maven-chainguard-checker/pom.xml`:**
+- `eu.maveniverse.maven.mima.extensions:mmr:2.4.25` — was already transitive, now explicit
+- `org.apache.maven:maven-model:3.9.9` — needed to compile against `Build`, `Model`,
+  `Plugin`, `PluginManagement` from the Maven model API
+
+**Test results:**
+
+| Project | Deps | Parent POMs | Plugins | Total | Coverage |
+|---------|------|-------------|---------|-------|----------|
+| `spring-boot-example` | 0 (BOM limitation) | 2 | 30 | 32 | 65% (21/32) |
+| `multi-module-example` | 19 | 0 | 4 | 23 | ~21% |
+
+`spring-boot-example` parent lineage resolved: `spring-boot-starter-parent:3.5.0` →
+`spring-boot-dependencies:3.5.0`. The 30 plugins include `maven-compiler-plugin`,
+`maven-surefire-plugin`, `spring-boot-maven-plugin`, `native-maven-plugin`, and the full
+set of plugins managed by the Spring Boot parent — all with resolved versions.
+
+### Known limitations
+
+- **BOM imports** (`scope=import` in `<dependencyManagement>`): dependency versions that come
+  solely from imported BOMs (e.g., spring-boot-dependencies) are still unresolvable in the
+  DOM-based dependency pass (Pass 2). The `spring-boot-example` therefore shows 0 resolved
+  dependencies despite declaring several. This is the primary remaining gap.
+- Effective model is only built for the root pom. Sub-modules whose parent is a reactor
+  module cannot be passed through `MavenModelReader` without the parent being installed to the
+  local repo first.
+
+### Next steps
+
+- Replace the DOM-based dependency pass (Pass 2) with mima/resolver-based model loading so
+  BOM-managed dependency versions are resolved correctly (this is the major remaining gap).
+- Consider reading sub-module effective models when the reactor root is already installed.
+- Add `--verbose` / `--detailed` chainctl passthrough flags.
+
+---
+
 # Status report — 2026-04-24
 
 ## Java implementation: `maven-chainguard-checker/`
