@@ -226,6 +226,9 @@ public class ChainguardChecker implements Callable<Integer> {
         print("Resolving with Maven Resolver...");
 
         Runtime runtime = Runtimes.INSTANCE.getRuntime();
+        Path coordsFile = outputFile.resolveSibling("chainguard-check-java-coords.txt");
+        TreeSet<String> allCoords = new TreeSet<>();
+
         try (Context context = runtime.create(
                 ContextOverrides.create().withUserSettings(true).build())) {
 
@@ -327,8 +330,9 @@ public class ChainguardChecker implements Callable<Integer> {
                 String reactorKey = artifact.getGroupId() + ":" + artifact.getArtifactId()
                         + ":" + artifact.getVersion();
                 if (reactorCoords.contains(reactorKey)) continue;
-                byScope.computeIfAbsent(scope, k -> new LinkedHashMap<>())
-                        .putIfAbsent(artifactCoords(artifact), artifact);
+                String ac = artifactCoords(artifact);
+                byScope.computeIfAbsent(scope, k -> new LinkedHashMap<>()).putIfAbsent(ac, artifact);
+                allCoords.add(ac);
             }
 
             // Also scan sub-module poms for any explicitly versioned plugins that might not
@@ -357,6 +361,7 @@ public class ChainguardChecker implements Callable<Integer> {
                     ArtifactResult result = context.repositorySystem()
                             .resolveArtifact(context.repositorySystemSession(), req);
                     resolvedParentPoms.put(coords, result.getArtifact());
+                    allCoords.add(coords);
                 } catch (Exception e) {
                     print("  Warning: could not resolve parent POM " + coords + ": " + e.getMessage());
                 }
@@ -371,6 +376,7 @@ public class ChainguardChecker implements Callable<Integer> {
                     ArtifactResult result = context.repositorySystem()
                             .resolveArtifact(context.repositorySystemSession(), req);
                     resolvedPlugins.put(coords, result.getArtifact());
+                    allCoords.add(coords);
                 } catch (Exception e) {
                     print("  Warning: could not resolve plugin " + coords + ": " + e.getMessage());
                 }
@@ -430,6 +436,7 @@ public class ChainguardChecker implements Callable<Integer> {
                             String depCoords = artifactCoords(depArtifact);
                             if (!resolvedPlugins.containsKey(depCoords)) {
                                 resolvedPluginDeps.putIfAbsent(depCoords, depArtifact);
+                                allCoords.add(depCoords);
                             }
                         }
                     }
@@ -449,6 +456,7 @@ public class ChainguardChecker implements Callable<Integer> {
                     ArtifactResult result = context.repositorySystem()
                             .resolveArtifact(context.repositorySystemSession(), req);
                     resolvedPluginParentPoms.put(coords, result.getArtifact());
+                    allCoords.add(coords);
                 } catch (Exception e) {
                     print("  Warning: could not resolve plugin parent POM " + coords + ": " + e.getMessage());
                 }
@@ -525,6 +533,10 @@ public class ChainguardChecker implements Callable<Integer> {
                     + resolvedPlugins.size() + " plugins, "
                     + resolvedPluginParentPoms.size() + " plugin parent POMs, "
                     + resolvedPluginDeps.size() + " plugin deps).");
+            print("");
+
+            Files.write(coordsFile, allCoords);
+            print("Coordinates saved to:  " + coordsFile.toAbsolutePath());
             print("");
 
             if (!runVerify) {
