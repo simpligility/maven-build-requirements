@@ -66,8 +66,12 @@ public class ChainguardChecker implements Callable<Integer> {
             description = "Output file (default: chainguard-check-java-results.txt)")
     private Path outputFile = Paths.get("chainguard-check-java-results.txt");
 
+    @Option(names = {"-v", "--verify"},
+            description = "Run chainctl libraries verify on resolved artifacts (default: false)")
+    private boolean runVerify = false;
+
     @Option(names = {"-y", "--yes"},
-            description = "Skip confirmation prompts and proceed automatically")
+            description = "Skip confirmation prompts when --verify is active")
     private boolean autoConfirm = false;
 
     private static final Pattern PERCENTAGE_PATTERN = Pattern.compile("[0-9]+\\.[0-9]+%");
@@ -225,9 +229,84 @@ public class ChainguardChecker implements Callable<Integer> {
         try (Context context = runtime.create(
                 ContextOverrides.create().withUserSettings(true).build())) {
 
-            // ── 2a: Resolve transitive dependency tree ────────────────────────
+            // ── 2a: Build effective POM via MavenModelReader (MMR extension) ──
+            Map<String, DefaultArtifact> pluginCandidates = new LinkedHashMap<>();
+            List<DefaultArtifact> parentPomCandidates = new ArrayList<>();
+            List<Dependency> directDeps = new ArrayList<>();
+
+            print("Building effective POM model...");
+            MavenModelReader modelReader = new MavenModelReader(context);
+            try {
+                ModelResponse rootResponse = modelReader.readModel(
+                        ModelRequest.builder().setPomFile(rootPom).build());
+
+                Model effectiveModel = rootResponse.getEffectiveModel();
+                Build build = effectiveModel.getBuild();
+                if (build != null) {
+                    PluginManagement pm = build.getPluginManagement();
+                    if (pm != null) {
+                        for (Plugin p : pm.getPlugins()) {
+                            if (!isBlank(p.getVersion())) {
+                                pluginCandidates.putIfAbsent(
+                                        p.getGroupId() + ":" + p.getArtifactId(),
+                                        new DefaultArtifact(p.getGroupId(), p.getArtifactId(), "jar", p.getVersion()));
+                            }
+                        }
+                    }
+                    for (Plugin p : build.getPlugins()) {
+                        if (!isBlank(p.getVersion())) {
+                            pluginCandidates.putIfAbsent(
+                                    p.getGroupId() + ":" + p.getArtifactId(),
+                                    new DefaultArtifact(p.getGroupId(), p.getArtifactId(), "jar", p.getVersion()));
+                        }
+                    }
+                }
+
+                for (String modelId : rootResponse.getLineage()) {
+                    if (isBlank(modelId)) continue;
+                    String[] parts = modelId.split(":");
+                    if (parts.length != 3) continue;
+                    String g = parts[0], a = parts[1], v = parts[2];
+                    if (isBlank(g) || isBlank(a) || isBlank(v)) continue;
+                    String coord = g + ":" + a + ":" + v;
+                    if (!reactorCoords.contains(coord)) {
+                        parentPomCandidates.add(new DefaultArtifact(g, a, "pom", v));
+                    }
+                }
+
+                // Collect direct deps from effective model — this resolves BOM-managed versions
+                // that the DOM-based Pass 2 cannot follow.
+                for (org.apache.maven.model.Dependency d : effectiveModel.getDependencies()) {
+                    String g = d.getGroupId();
+                    String a = d.getArtifactId();
+                    String v = d.getVersion();
+                    String scope = isBlank(d.getScope()) ? "compile" : d.getScope();
+                    String type = isBlank(d.getType()) ? "jar" : d.getType();
+                    if (isBlank(g) || isBlank(a) || isBlank(v)) continue;
+                    if ("import".equals(scope)) continue;
+                    String coord = g + ":" + a + ":" + v;
+                    if (reactorCoords.contains(coord)) continue;
+                    directDeps.add(new Dependency(new DefaultArtifact(g, a, type, v), scope));
+                }
+
+                print("  Effective model built — "
+                        + pluginCandidates.size() + " plugin(s) found, "
+                        + parentPomCandidates.size() + " parent POM(s) in lineage, "
+                        + directDeps.size() + " direct dep(s).");
+
+            } catch (Exception e) {
+                print("  Warning: effective model could not be built: " + e.getMessage());
+                print("  Falling back to DOM-based dependency and plugin collection.");
+            }
+            print("");
+
+            // ── 2b: Resolve transitive dependency tree ────────────────────────
+            // Use effective model deps when available (handles BOM imports); fall back to DOM-parsed deps.
+            List<Dependency> depsForResolution = directDeps.isEmpty()
+                    ? new ArrayList<>(uniqueDeps.values())
+                    : directDeps;
             CollectRequest collectRequest = new CollectRequest();
-            collectRequest.setDependencies(new ArrayList<>(uniqueDeps.values()));
+            collectRequest.setDependencies(depsForResolution);
             collectRequest.setRepositories(context.remoteRepositories());
 
             CollectResult collectResult = context.repositorySystem()
@@ -251,67 +330,6 @@ public class ChainguardChecker implements Callable<Integer> {
                 byScope.computeIfAbsent(scope, k -> new LinkedHashMap<>())
                         .putIfAbsent(coords, artifact);
             }
-
-            // ── 2b: Build effective POM via MavenModelReader (MMR extension) ──
-            // This gives us the fully resolved parent chain, plugin management, and
-            // all inherited plugins — exactly what `mvn help:effective-pom` computes.
-            Map<String, DefaultArtifact> pluginCandidates = new LinkedHashMap<>();
-            List<DefaultArtifact> parentPomCandidates = new ArrayList<>();
-
-            print("Building effective POM model...");
-            MavenModelReader modelReader = new MavenModelReader(context);
-            try {
-                ModelResponse rootResponse = modelReader.readModel(
-                        ModelRequest.builder().setPomFile(rootPom).build());
-
-                Model effectiveModel = rootResponse.getEffectiveModel();
-                Build build = effectiveModel.getBuild();
-                if (build != null) {
-                    // pluginManagement from the full parent chain: these entries always carry their
-                    // resolved version (version injection from management is part of model building)
-                    PluginManagement pm = build.getPluginManagement();
-                    if (pm != null) {
-                        for (Plugin p : pm.getPlugins()) {
-                            if (!isBlank(p.getVersion())) {
-                                pluginCandidates.putIfAbsent(
-                                        p.getGroupId() + ":" + p.getArtifactId(),
-                                        new DefaultArtifact(p.getGroupId(), p.getArtifactId(), "jar", p.getVersion()));
-                            }
-                        }
-                    }
-                    // build/plugins that carry an explicit version and aren't already in management
-                    for (Plugin p : build.getPlugins()) {
-                        if (!isBlank(p.getVersion())) {
-                            pluginCandidates.putIfAbsent(
-                                    p.getGroupId() + ":" + p.getArtifactId(),
-                                    new DefaultArtifact(p.getGroupId(), p.getArtifactId(), "jar", p.getVersion()));
-                        }
-                    }
-                }
-
-                // Parent POM lineage: lineage[0] = current model, last = super POM (empty string).
-                // We want everything in between that isn't a reactor module.
-                for (String modelId : rootResponse.getLineage()) {
-                    if (isBlank(modelId)) continue;
-                    String[] parts = modelId.split(":");
-                    if (parts.length != 3) continue;
-                    String g = parts[0], a = parts[1], v = parts[2];
-                    if (isBlank(g) || isBlank(a) || isBlank(v)) continue;
-                    String coord = g + ":" + a + ":" + v;
-                    if (!reactorCoords.contains(coord)) {
-                        parentPomCandidates.add(new DefaultArtifact(g, a, "pom", v));
-                    }
-                }
-
-                print("  Effective model built — "
-                        + pluginCandidates.size() + " plugin(s) found, "
-                        + parentPomCandidates.size() + " parent POM(s) in lineage.");
-
-            } catch (Exception e) {
-                print("  Warning: effective model could not be built: " + e.getMessage());
-                print("  Falling back to DOM-based plugin collection for root POM.");
-            }
-            print("");
 
             // Also scan sub-module poms for any explicitly versioned plugins that might not
             // appear in the root's effective model (e.g., declared only in a sub-module).
@@ -404,6 +422,13 @@ public class ChainguardChecker implements Callable<Integer> {
                     + resolvedParentPoms.size() + " parent POMs, "
                     + resolvedPlugins.size() + " plugins).");
             print("");
+
+            if (!runVerify) {
+                print("Run with --verify to check Chainguard coverage for these artifacts.");
+                print("Analysis results saved to: " + outputFile.toAbsolutePath());
+                writer.close();
+                return 0;
+            }
 
             if (!confirmProceed(artifactCount)) {
                 print("Verification skipped. Analysis results saved to: " + outputFile.toAbsolutePath());
