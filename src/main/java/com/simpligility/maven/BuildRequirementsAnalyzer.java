@@ -83,19 +83,36 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
 
         writer = new PrintWriter(Files.newBufferedWriter(outputFile));
 
-        print("Maven Project Dependency Analysis");
+        DocumentBuilderFactory dbf = DocumentBuilderFactory.newInstance();
+        dbf.setNamespaceAware(false);
+        DocumentBuilder db = dbf.newDocumentBuilder();
+        db.setErrorHandler(null);
+
+        // Read the root POM's GAV up front so we can include it in the header.
+        // Parent fallback applies for groupId and version (Maven inheritance).
+        Document headerDoc = db.parse(rootPom.toFile());
+        Element headerProject = headerDoc.getDocumentElement();
+        String headerGroupId = directText(headerProject, "groupId");
+        String headerArtifactId = directText(headerProject, "artifactId");
+        String headerVersion = directText(headerProject, "version");
+        Element headerParent = directElement(headerProject, "parent");
+        if (headerParent != null) {
+            if (isBlank(headerGroupId)) headerGroupId = directText(headerParent, "groupId");
+            if (isBlank(headerVersion)) headerVersion = directText(headerParent, "version");
+        }
+
+        print("Maven build requirements analysis");
+        print("");
         print("Date: " + new Date());
         print("Project: " + projectDir.toAbsolutePath().normalize());
+        print("Group ID: " + headerGroupId);
+        print("Artifact ID: " + headerArtifactId);
+        print("Version: " + headerVersion);
         print("=======================================================================");
         print("");
 
         // ── Step 1: Parse project POM files ──────────────────────────────────
         print("Collecting project structure...");
-
-        DocumentBuilderFactory dbf = DocumentBuilderFactory.newInstance();
-        dbf.setNamespaceAware(false);
-        DocumentBuilder db = dbf.newDocumentBuilder();
-        db.setErrorHandler(null);
 
         List<Path> pomFiles = new ArrayList<>();
         pomFiles.add(rootPom);
