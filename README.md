@@ -1,13 +1,16 @@
 # Maven Build Requirements
 
-A tool that analyzes a Maven project's dependencies, plugins, and parent POMs and writes
-the resolved artifact coordinates and a human-readable report to disk. Designed to feed
-downstream tools (for example, [Chainguard Libraries for Java](https://www.chainguard.dev/libraries)
-coverage checks).
+A tool that analyzes a Maven project's dependencies, plugins, and parent POMs
+and writes the resolved artifact coordinates and a human-readable report to
+disk. Compared to a simple dependency list, the resulting list includes all
+dependencies necessary to build the project.
+
+Designed to feed downstream tools such as the coverage checker for [Chainguard
+Libraries for Java](https://www.chainguard.dev/libraries) .
 
 Uses [mima](https://maveniverse.eu/docs/mima/) and the MMR extension to build effective
-POM models, walk the full dependency tree, and capture plugins and parent POMs (including
-each plugin's own transitive dependencies and parent lineage).
+POM models, walk the full dependency tree, and capture plugins and parent POMs, including
+each plugin's own transitive dependencies and parent lineage.
 
 ## Requirements
 
@@ -34,10 +37,10 @@ java -jar /path/to/maven-build-requirements-1.0-SNAPSHOT.jar
 Flags:
 
 - `-p, --project <dir>` — project directory containing `pom.xml` (default: current directory)
-- `-o, --output <file>` — human-readable report (default: `chainguard-check-java-results.txt`)
+- `-o, --output <file>` — human-readable report (default: `maven-build-requirements-results.txt`)
 
 The tool also writes a sorted, deduplicated list of artifact coordinates to
-`chainguard-check-java-coords.txt` alongside the report.
+`maven-build-requirements-coords.txt` alongside the report.
 
 ## Test projects
 

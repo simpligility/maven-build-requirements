@@ -11,9 +11,9 @@ buildNumber.properties
 .mvn/wrapper/maven-wrapper.jar
 
 # Chainguard check output (generated at runtime)
-chainguard-check-java-results.txt
-src/it/projects/**/chainguard-check-java-results.txt
-src/it/projects/**/chainguard-check-java-coords.txt
+maven-build-requirements-results.txt
+src/it/projects/**/maven-build-requirements-results.txt
+src/it/projects/**/maven-build-requirements-coords.txt
 
 # IDE files
 .idea/

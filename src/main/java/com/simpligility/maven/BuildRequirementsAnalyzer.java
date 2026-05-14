@@ -59,8 +59,8 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
     private Path projectDir = Paths.get(".");
 
     @Option(names = {"-o", "--output"},
-            description = "Output file (default: chainguard-check-java-results.txt)")
-    private Path outputFile = Paths.get("chainguard-check-java-results.txt");
+            description = "Output file (default: maven-build-requirements-results.txt)")
+    private Path outputFile = Paths.get("maven-build-requirements-results.txt");
 
     private static final List<String> SCOPE_ORDER =
             List.of("compile", "runtime", "provided", "test", "system", "import");
@@ -211,7 +211,7 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
         print("Resolving with Maven Resolver...");
 
         Runtime runtime = Runtimes.INSTANCE.getRuntime();
-        Path coordsFile = outputFile.resolveSibling("chainguard-check-java-coords.txt");
+        Path coordsFile = outputFile.resolveSibling("maven-build-requirements-coords.txt");
         TreeSet<String> allCoords = new TreeSet<>();
 
         try (Context context = runtime.create(
