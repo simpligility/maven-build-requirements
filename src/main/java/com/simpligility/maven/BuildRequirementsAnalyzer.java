@@ -467,6 +467,139 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
                     + resolvedPluginParentPoms.size() + " plugin parent POM(s).");
             print("");
 
+            // ── 2e: Collect extensions from .mvn/extensions.xml ──────────────
+            Map<String, DefaultArtifact> extensionCandidates = new LinkedHashMap<>();
+            Path extensionsXml = projectDir.resolve(".mvn").resolve("extensions.xml");
+            if (Files.exists(extensionsXml)) {
+                print("Collecting extensions from .mvn/extensions.xml...");
+                try {
+                    Document extDoc = db.parse(extensionsXml.toFile());
+                    Element extRoot = extDoc.getDocumentElement();
+                    NodeList extNodes = extRoot.getElementsByTagName("extension");
+                    for (int i = 0; i < extNodes.getLength(); i++) {
+                        Element ext = (Element) extNodes.item(i);
+                        String eg = directText(ext, "groupId");
+                        String ea = directText(ext, "artifactId");
+                        String ev = directText(ext, "version");
+                        if (isBlank(eg) || isBlank(ea) || isBlank(ev)) continue;
+                        if (ev.startsWith("${")) {
+                            String propName = ev.substring(2, ev.length() - 1);
+                            String resolved = properties.get(propName);
+                            if (!isBlank(resolved) && !resolved.startsWith("${")) ev = resolved;
+                        }
+                        if (ev.startsWith("${")) continue;
+                        extensionCandidates.putIfAbsent(eg + ":" + ea,
+                                new DefaultArtifact(eg, ea, "jar", ev));
+                    }
+                    print("  Found " + extensionCandidates.size() + " extension(s).");
+                } catch (Exception e) {
+                    print("  Warning: could not parse extensions.xml: " + e.getMessage());
+                }
+                print("");
+            }
+
+            // ── 2f: Resolve extension JARs ───────────────────────────────────
+            Map<String, Artifact> resolvedExtensions = new LinkedHashMap<>();
+            for (DefaultArtifact candidate : extensionCandidates.values()) {
+                String coords = artifactCoords(candidate);
+                try {
+                    ArtifactRequest req = new ArtifactRequest(candidate, context.remoteRepositories(), null);
+                    ArtifactResult result = context.repositorySystem()
+                            .resolveArtifact(context.repositorySystemSession(), req);
+                    resolvedExtensions.put(coords, result.getArtifact());
+                    allCoords.add(coords);
+                } catch (Exception e) {
+                    print("  Warning: could not resolve extension " + coords + ": " + e.getMessage());
+                }
+            }
+
+            // ── 2g: Load extension dependency trees via MMR ──────────────────
+            Map<String, Artifact> resolvedExtensionDeps = new LinkedHashMap<>();
+            List<DefaultArtifact> extensionParentPomCandidates = new ArrayList<>();
+            if (!extensionCandidates.isEmpty()) {
+                print("Loading extension dependency trees...");
+                for (Map.Entry<String, DefaultArtifact> extEntry : extensionCandidates.entrySet()) {
+                    DefaultArtifact extArtifact = extEntry.getValue();
+                    DefaultArtifact extPomArtifact = new DefaultArtifact(
+                            extArtifact.getGroupId(), extArtifact.getArtifactId(),
+                            "pom", extArtifact.getVersion());
+                    try {
+                        ModelResponse extResponse = modelReader.readModel(
+                                ModelRequest.builder().setArtifact(extPomArtifact).build());
+                        Model extEffective = extResponse.getEffectiveModel();
+
+                        String extGav = extArtifact.getGroupId() + ":"
+                                + extArtifact.getArtifactId() + ":" + extArtifact.getVersion();
+                        for (String modelId : extResponse.getLineage()) {
+                            if (isBlank(modelId) || modelId.equals(extGav)) continue;
+                            String[] parts = modelId.split(":");
+                            if (parts.length != 3) continue;
+                            String g = parts[0], a = parts[1], v = parts[2];
+                            if (isBlank(g) || isBlank(a) || isBlank(v)) continue;
+                            extensionParentPomCandidates.add(new DefaultArtifact(g, a, "pom", v));
+                        }
+
+                        List<Dependency> extDirectDeps = new ArrayList<>();
+                        for (org.apache.maven.model.Dependency d : extEffective.getDependencies()) {
+                            String g = d.getGroupId(), a = d.getArtifactId(), v = d.getVersion();
+                            String scope = isBlank(d.getScope()) ? "compile" : d.getScope();
+                            String type = isBlank(d.getType()) ? "jar" : d.getType();
+                            if (isBlank(g) || isBlank(a) || isBlank(v)) continue;
+                            if ("import".equals(scope)) continue;
+                            extDirectDeps.add(new Dependency(new DefaultArtifact(g, a, type, v), scope));
+                        }
+                        if (!extDirectDeps.isEmpty()) {
+                            CollectRequest extCollect = new CollectRequest();
+                            extCollect.setDependencies(extDirectDeps);
+                            extCollect.setRepositories(context.remoteRepositories());
+                            CollectResult extCollectResult = context.repositorySystem()
+                                    .collectDependencies(context.repositorySystemSession(), extCollect);
+                            context.repositorySystem().resolveDependencies(context.repositorySystemSession(),
+                                    new DependencyRequest(extCollectResult.getRoot(), null));
+                            PreorderNodeListGenerator extNlg = new PreorderNodeListGenerator();
+                            extCollectResult.getRoot().accept(extNlg);
+                            for (DependencyNode depNode : extNlg.getNodes()) {
+                                if (depNode.getDependency() == null) continue;
+                                Artifact depArtifact = depNode.getArtifact();
+                                String reactorKey = depArtifact.getGroupId() + ":"
+                                        + depArtifact.getArtifactId() + ":" + depArtifact.getVersion();
+                                if (reactorCoords.contains(reactorKey)) continue;
+                                String depCoords = artifactCoords(depArtifact);
+                                if (!resolvedExtensions.containsKey(depCoords)) {
+                                    resolvedExtensionDeps.putIfAbsent(depCoords, depArtifact);
+                                    allCoords.add(depCoords);
+                                }
+                            }
+                        }
+                    } catch (Exception e) {
+                        print("  Warning: could not load extension model for "
+                                + extEntry.getKey() + ": " + e.getMessage());
+                    }
+                }
+            }
+
+            Map<String, Artifact> resolvedExtensionParentPoms = new LinkedHashMap<>();
+            for (DefaultArtifact candidate : extensionParentPomCandidates) {
+                String coords = artifactCoords(candidate);
+                if (resolvedExtensionParentPoms.containsKey(coords)) continue;
+                if (resolvedParentPoms.containsKey(coords)) continue;
+                if (resolvedPluginParentPoms.containsKey(coords)) continue;
+                try {
+                    ArtifactRequest req = new ArtifactRequest(candidate, context.remoteRepositories(), null);
+                    ArtifactResult result = context.repositorySystem()
+                            .resolveArtifact(context.repositorySystemSession(), req);
+                    resolvedExtensionParentPoms.put(coords, result.getArtifact());
+                    allCoords.add(coords);
+                } catch (Exception e) {
+                    print("  Warning: could not resolve extension parent POM " + coords + ": " + e.getMessage());
+                }
+            }
+            if (!extensionCandidates.isEmpty()) {
+                print("  Extension trees loaded — " + resolvedExtensionDeps.size() + " dep(s), "
+                        + resolvedExtensionParentPoms.size() + " extension parent POM(s).");
+                print("");
+            }
+
             // ── Step 3: Print resolved artifact lists ─────────────────────────
             print("Resolved dependencies:");
             print("");
@@ -523,18 +656,56 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
                 }
             }
 
+            if (!resolvedExtensions.isEmpty()) {
+                print("Extensions:");
+                print("");
+                for (Map.Entry<String, Artifact> e : resolvedExtensions.entrySet()) {
+                    print("  " + e.getKey());
+                    File file = e.getValue().getFile();
+                    print("  " + (file != null ? file.getAbsolutePath() : "NOT FOUND in local cache"));
+                    print("");
+                }
+            }
+
+            if (!resolvedExtensionParentPoms.isEmpty()) {
+                print("Extension parent POMs:");
+                print("");
+                for (Map.Entry<String, Artifact> e : resolvedExtensionParentPoms.entrySet()) {
+                    print("  " + e.getKey());
+                    File file = e.getValue().getFile();
+                    print("  " + (file != null ? file.getAbsolutePath() : "NOT FOUND in local cache"));
+                    print("");
+                }
+            }
+
+            if (!resolvedExtensionDeps.isEmpty()) {
+                print("Extension dependencies:");
+                print("");
+                for (Map.Entry<String, Artifact> e : resolvedExtensionDeps.entrySet()) {
+                    print("  " + e.getKey());
+                    File file = e.getValue().getFile();
+                    print("  " + (file != null ? file.getAbsolutePath() : "NOT FOUND in local cache"));
+                    print("");
+                }
+            }
+
             print("=======================================================================");
             print("");
 
             int depCount = byScope.values().stream().mapToInt(Map::size).sum();
             int artifactCount = depCount + resolvedParentPoms.size() + resolvedPlugins.size()
-                    + resolvedPluginParentPoms.size() + resolvedPluginDeps.size();
+                    + resolvedPluginParentPoms.size() + resolvedPluginDeps.size()
+                    + resolvedExtensions.size() + resolvedExtensionParentPoms.size()
+                    + resolvedExtensionDeps.size();
             print("Found " + artifactCount + " artifact(s)"
                     + " (" + depCount + " project deps, "
                     + resolvedParentPoms.size() + " project parent POMs, "
                     + resolvedPlugins.size() + " plugins, "
                     + resolvedPluginParentPoms.size() + " plugin parent POMs, "
-                    + resolvedPluginDeps.size() + " plugin deps).");
+                    + resolvedPluginDeps.size() + " plugin deps, "
+                    + resolvedExtensions.size() + " extensions, "
+                    + resolvedExtensionParentPoms.size() + " extension parent POMs, "
+                    + resolvedExtensionDeps.size() + " extension deps).");
             print("");
 
             Files.write(coordsFile, allCoords);
