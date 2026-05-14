@@ -1,63 +1,47 @@
-# Maven Chainguard Checker
+# Maven Build Requirements
 
-A tool that analyzes a Maven project's dependencies and checks which ones are provided
-and verified by [Chainguard Libraries for Java](https://www.chainguard.dev/libraries).
+A tool that analyzes a Maven project's dependencies, plugins, and parent POMs and writes
+the resolved artifact coordinates and a human-readable report to disk. Designed to feed
+downstream tools (for example, [Chainguard Libraries for Java](https://www.chainguard.dev/libraries)
+coverage checks).
+
+Uses [mima](https://maveniverse.eu/docs/mima/) and the MMR extension to build effective
+POM models, walk the full dependency tree, and capture plugins and parent POMs (including
+each plugin's own transitive dependencies and parent lineage).
 
 ## Requirements
 
 - [Apache Maven](https://maven.apache.org/) 3.9+ on your `PATH`
-- [chainctl](https://edu.chainguard.dev/chainguard/chainctl-docs/) installed and authenticated
+- JDK 21+ to build and run
 - A successfully built Maven project with dependencies resolved to the local cache
+
+## Building
+
+```bash
+./mvnw package
+```
+
+Produces an executable fat JAR at `target/maven-build-requirements-1.0-SNAPSHOT.jar`.
 
 ## Usage
 
-Run the script from the root directory of the Maven project you want to analyze:
+From the root directory of the Maven project you want to analyze:
 
 ```bash
-/path/to/chainguard-check.sh
+java -jar /path/to/maven-build-requirements-1.0-SNAPSHOT.jar
 ```
 
-The script performs the following steps:
+Flags:
 
-1. Asks whether the project has already been built, and offers to run `mvn clean install` if not.
-2. Resolves all dependencies via `mvn dependency:list`.
-3. Runs `chainctl libraries verify` against each artifact in the local Maven cache (`~/.m2/repository`).
-4. Prints results grouped by scope (compile, runtime, provided, test, ...).
-5. Prints a summary with the total artifact count and Chainguard coverage percentage.
+- `-p, --project <dir>` — project directory containing `pom.xml` (default: current directory)
+- `-o, --output <file>` — human-readable report (default: `chainguard-check-java-results.txt`)
 
-Results are written to both stdout and `chainguard-check-results.txt` in the project directory.
-
-## Example output
-
-```
-Chainguard Coverage Analysis
-Date: Thu 26 Mar 2026
-Project: /path/to/your/project
-=======================================================================
-
-=== compile ===
-  org.apache.commons:commons-lang3:3.17.0 => 100.00%
-  org.slf4j:slf4j-api:2.0.17 => 100.00%
-  com.google.guava:guava:33.4.0-jre => 100.00%
-  org.checkerframework:checker-qual:3.43.0 => 0.00%
-
-=== runtime ===
-  ch.qos.logback:logback-classic:1.5.18 => 100.00%
-
-=== test ===
-  org.junit.jupiter:junit-jupiter:5.11.4 => 0.00%
-
-=======================================================================
-Summary
-  Total artifacts checked : 7
-  Chainguard covered (100%): 4
-  Overall coverage        : 57%
-=======================================================================
-```
+The tool also writes a sorted, deduplicated list of artifact coordinates to
+`chainguard-check-java-coords.txt` alongside the report.
 
 ## Test projects
 
-The `test-projects/` directory contains example Maven projects for testing the script:
+The `src/it/projects/` directory contains example Maven projects for trying the tool:
 
 - `quickstart-example` — minimal Maven quickstart project
 - `multi-module-example` — multi-module project with compile, runtime, and test dependencies

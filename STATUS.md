@@ -1,3 +1,57 @@
+# Status report — 2026-05-14
+
+## Refactor: project layout and chainctl removal
+
+### Layout
+
+- Maven project lifted from `maven-chainguard-checker/` to the repo root.
+  `pom.xml`, `mvnw`, `mvnw.cmd`, `.mvn/`, and `src/main/java/dev/chainguard/`
+  are now at the top level; the `maven-chainguard-checker/` directory is gone.
+- Test projects moved from `test-projects/` to `src/it/projects/<project>/`.
+  This is the standard maven-invoker-plugin layout but the plugin is **not**
+  wired up yet — the directory is just a clean home that doesn't interfere with
+  the root Maven build (sub-poms are not declared as modules, so the reactor
+  ignores them).
+
+### chainctl removal
+
+- `ChainguardChecker.java` no longer shells out to `chainctl`. Removed
+  the `--verify`/`-y` flags, the `runChainctl`/`confirmProceed`/`askYesNo`
+  helpers, the `PERCENTAGE_PATTERN`/`ANSI_PATTERN` constants, the Step 4
+  per-scope verification block, and the summary/coverage output. The tool
+  now always writes a human-readable report plus the sorted coords file,
+  then exits. `SCOPE_ORDER` is kept for later use.
+- `chainguard-check.sh` and its helper `updatescriptintests.sh` deleted —
+  without chainctl, the script just wrapped `mvn dependency:list` and didn't
+  add enough over the Java tool to justify keeping. `.gitignore` updated to
+  drop the now-irrelevant globs.
+
+### Rename
+
+- `groupId` `dev.chainguard` → `com.simpligility.maven`
+- `artifactId` `maven-chainguard-checker` → `maven-build-requirements`
+- Java package `dev.chainguard` → `com.simpligility.maven` (class
+  `ChainguardChecker` kept for now)
+- Shade plugin `mainClass`, pom `<name>`/`<description>`, and README title
+  updated to match. Output JAR is now
+  `target/maven-build-requirements-1.0-SNAPSHOT.jar`.
+- Class renamed `ChainguardChecker` → `BuildRequirementsAnalyzer`. picocli
+  `@Command(name = …)` is now `build-requirements-analyzer`.
+- Test projects' own coordinates updated (per-project namespace):
+  - `quickstart-example`: groupId/package `com.simpligility.maven.quickstart`
+  - `multi-module-example` + sub-modules: `com.simpligility.maven.multimodule`
+    (sub-modules share the package, matching the pre-refactor split-package
+    layout)
+  - `spring-boot-example`: `com.simpligility.maven.springboot`
+- End-to-end smoke tests pass: `quickstart-example` (434 artifacts) and
+  `multi-module-example` (251 artifacts) both build and analyze cleanly.
+
+### Verified
+
+- `./mvnw clean compile` succeeds.
+
+---
+
 # Status report — 2026-05-01
 
 ## Java implementation: `maven-chainguard-checker/`

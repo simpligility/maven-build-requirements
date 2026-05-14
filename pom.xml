@@ -1,0 +1,103 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.simpligility.maven</groupId>
+    <artifactId>maven-build-requirements</artifactId>
+    <version>1.0-SNAPSHOT</version>
+    <packaging>jar</packaging>
+
+    <name>Maven Build Requirements</name>
+    <description>Analyzes Maven project dependencies, plugins, and parent POMs and writes the resolved artifact coordinates and a human-readable report.</description>
+
+    <properties>
+        <maven.compiler.release>21</maven.compiler.release>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <mima.version>2.4.25</mima.version>
+        <toolbox.version>0.9.0</toolbox.version>
+    </properties>
+
+    <dependencies>
+        <!-- mima API: bootstraps Maven Resolver from any context -->
+        <dependency>
+            <groupId>eu.maveniverse.maven.mima</groupId>
+            <artifactId>context</artifactId>
+            <version>${mima.version}</version>
+        </dependency>
+        <!-- mima standalone runtime: no DI framework required -->
+        <dependency>
+            <groupId>eu.maveniverse.maven.mima.runtime</groupId>
+            <artifactId>standalone-static</artifactId>
+            <version>${mima.version}</version>
+            <scope>runtime</scope>
+        </dependency>
+        <!-- toolbox shared: high-level Maven dependency resolution utilities -->
+        <dependency>
+            <groupId>eu.maveniverse.maven.toolbox</groupId>
+            <artifactId>shared</artifactId>
+            <version>${toolbox.version}</version>
+        </dependency>
+        <!-- CLI argument parsing -->
+        <dependency>
+            <groupId>info.picocli</groupId>
+            <artifactId>picocli</artifactId>
+            <version>4.7.7</version>
+        </dependency>
+        <!-- MMR extension: builds effective POM models including parent inheritance and plugin management -->
+        <dependency>
+            <groupId>eu.maveniverse.maven.mima.extensions</groupId>
+            <artifactId>mmr</artifactId>
+            <version>${mima.version}</version>
+        </dependency>
+        <!-- Maven model API: Build, Model, Plugin, PluginManagement (brought in at runtime by mima, needed at compile) -->
+        <dependency>
+            <groupId>org.apache.maven</groupId>
+            <artifactId>maven-model</artifactId>
+            <version>3.9.9</version>
+        </dependency>
+        <!-- Required by mima standalone-static: XML parsing split from plexus-utils in Maven 3.9+ -->
+        <dependency>
+            <groupId>org.codehaus.plexus</groupId>
+            <artifactId>plexus-xml</artifactId>
+            <version>3.0.1</version>
+            <scope>runtime</scope>
+        </dependency>
+        <!-- SLF4J backend for standalone mode -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-simple</artifactId>
+            <version>2.0.17</version>
+            <scope>runtime</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-shade-plugin</artifactId>
+                <version>3.6.0</version>
+                <executions>
+                    <execution>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                        <configuration>
+                            <createDependencyReducedPom>false</createDependencyReducedPom>
+                            <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>com.simpligility.maven.BuildRequirementsAnalyzer</mainClass>
+                                </transformer>
+                                <!-- Merges META-INF/services for mima runtime discovery -->
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                            </transformers>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>
