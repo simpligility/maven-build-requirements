@@ -600,6 +600,48 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
                 print("");
             }
 
+            // ── 2h: Maven wrapper distribution ───────────────────────────────
+            // If the project uses the Maven wrapper, parse its distributionUrl and
+            // resolve the configured Maven binary distribution from the repository.
+            Artifact resolvedMavenDistribution = null;
+            String mavenDistributionCoords = null;
+            Path wrapperProperties = projectDir.resolve(".mvn").resolve("wrapper")
+                    .resolve("maven-wrapper.properties");
+            if (Files.exists(wrapperProperties)) {
+                print("Detecting Maven wrapper distribution...");
+                try (var in = Files.newInputStream(wrapperProperties)) {
+                    Properties wp = new Properties();
+                    wp.load(in);
+                    String distUrl = wp.getProperty("distributionUrl");
+                    if (isBlank(distUrl)) {
+                        print("  Warning: distributionUrl not found in maven-wrapper.properties");
+                    } else {
+                        DefaultArtifact distArtifact = artifactFromMavenUrl(distUrl);
+                        if (distArtifact == null) {
+                            print("  Warning: could not parse Maven distribution URL: " + distUrl);
+                        } else {
+                            String coords = artifactCoords(distArtifact);
+                            try {
+                                ArtifactRequest req = new ArtifactRequest(
+                                        distArtifact, context.remoteRepositories(), null);
+                                ArtifactResult result = context.repositorySystem()
+                                        .resolveArtifact(context.repositorySystemSession(), req);
+                                resolvedMavenDistribution = result.getArtifact();
+                                mavenDistributionCoords = coords;
+                                allCoords.add(coords);
+                                print("  Maven distribution: " + coords);
+                            } catch (Exception e) {
+                                print("  Warning: could not resolve Maven distribution "
+                                        + coords + ": " + e.getMessage());
+                            }
+                        }
+                    }
+                } catch (Exception e) {
+                    print("  Warning: could not parse maven-wrapper.properties: " + e.getMessage());
+                }
+                print("");
+            }
+
             // ── Step 3: Print resolved artifact lists ─────────────────────────
             print("Resolved dependencies:");
             print("");
@@ -689,23 +731,39 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
                 }
             }
 
+            if (resolvedMavenDistribution != null) {
+                print("Maven distribution:");
+                print("");
+                print("  " + mavenDistributionCoords);
+                File file = resolvedMavenDistribution.getFile();
+                print("  " + (file != null ? file.getAbsolutePath() : "NOT FOUND in local cache"));
+                print("");
+            }
+
             print("=======================================================================");
             print("");
 
             int depCount = byScope.values().stream().mapToInt(Map::size).sum();
+            int mavenDistCount = resolvedMavenDistribution != null ? 1 : 0;
             int artifactCount = depCount + resolvedParentPoms.size() + resolvedPlugins.size()
                     + resolvedPluginParentPoms.size() + resolvedPluginDeps.size()
                     + resolvedExtensions.size() + resolvedExtensionParentPoms.size()
-                    + resolvedExtensionDeps.size();
-            print("Found " + artifactCount + " artifact(s)"
-                    + " (" + depCount + " project deps, "
-                    + resolvedParentPoms.size() + " project parent POMs, "
-                    + resolvedPlugins.size() + " plugins, "
-                    + resolvedPluginParentPoms.size() + " plugin parent POMs, "
-                    + resolvedPluginDeps.size() + " plugin deps, "
-                    + resolvedExtensions.size() + " extensions, "
-                    + resolvedExtensionParentPoms.size() + " extension parent POMs, "
-                    + resolvedExtensionDeps.size() + " extension deps).");
+                    + resolvedExtensionDeps.size() + mavenDistCount;
+            StringBuilder summary = new StringBuilder("Found ").append(artifactCount)
+                    .append(" artifact(s) (")
+                    .append(depCount).append(" project deps, ")
+                    .append(resolvedParentPoms.size()).append(" project parent POMs, ")
+                    .append(resolvedPlugins.size()).append(" plugins, ")
+                    .append(resolvedPluginParentPoms.size()).append(" plugin parent POMs, ")
+                    .append(resolvedPluginDeps.size()).append(" plugin deps, ")
+                    .append(resolvedExtensions.size()).append(" extensions, ")
+                    .append(resolvedExtensionParentPoms.size()).append(" extension parent POMs, ")
+                    .append(resolvedExtensionDeps.size()).append(" extension deps");
+            if (mavenDistCount > 0) {
+                summary.append(", ").append(mavenDistCount).append(" Maven distribution");
+            }
+            summary.append(").");
+            print(summary.toString());
             print("");
 
             Files.write(coordsFile, allCoords);
@@ -796,6 +854,55 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
 
     private boolean isBlank(String s) {
         return s == null || s.isBlank();
+    }
+
+    /**
+     * Parses a Maven repository URL (e.g. the wrapper's distributionUrl) into a
+     * Maven artifact. Expects the canonical {@code <groupPath>/<artifactId>/<version>/<filename>}
+     * suffix and strips common repo-base prefixes (e.g. {@code maven2/}).
+     * Returns {@code null} if the URL does not match the expected layout.
+     */
+    private DefaultArtifact artifactFromMavenUrl(String url) {
+        try {
+            String path = java.net.URI.create(url).getPath();
+            if (path == null || path.isEmpty()) return null;
+            if (path.startsWith("/")) path = path.substring(1);
+            String[] segs = path.split("/");
+
+            // Strip well-known Maven repository path prefixes so the remaining
+            // segments are groupPath / artifactId / version / filename.
+            int start = 0;
+            if (segs.length > 0 && "maven2".equals(segs[0])) start = 1;
+            else if (segs.length > 1 && "repository".equals(segs[0])) start = 2;
+
+            if (segs.length - start < 4) return null;
+            String filename = segs[segs.length - 1];
+            String version = segs[segs.length - 2];
+            String artifactId = segs[segs.length - 3];
+            String[] groupSegs = java.util.Arrays.copyOfRange(segs, start, segs.length - 3);
+            String groupId = String.join(".", groupSegs);
+            if (isBlank(groupId) || isBlank(artifactId) || isBlank(version)) return null;
+
+            String prefix = artifactId + "-" + version;
+            String classifier = null;
+            String ext;
+            if (filename.startsWith(prefix + "-")) {
+                String rest = filename.substring(prefix.length() + 1);
+                int dot = rest.lastIndexOf('.');
+                if (dot <= 0) return null;
+                classifier = rest.substring(0, dot);
+                ext = rest.substring(dot + 1);
+            } else if (filename.startsWith(prefix + ".")) {
+                ext = filename.substring(prefix.length() + 1);
+            } else {
+                return null;
+            }
+            return classifier != null
+                    ? new DefaultArtifact(groupId, artifactId, classifier, ext, version)
+                    : new DefaultArtifact(groupId, artifactId, ext, version);
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     public static void main(String[] args) {
