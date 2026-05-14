@@ -111,6 +111,69 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
         print("=======================================================================");
         print("");
 
+        // ── Step 0: Maven environment ────────────────────────────────────────
+        // Determine the Maven version we will use for lifecycle bindings and
+        // (when the wrapper is configured) for the binary distribution listing.
+        // Prefer the wrapper-defined version; otherwise fall back to `mvn` on PATH.
+        print("Detecting Maven environment...");
+        String mavenVersion = null;
+        String mavenVersionSource = null;
+        DefaultArtifact mavenDistroCandidate = null;
+
+        Path wrapperProperties = projectDir.resolve(".mvn").resolve("wrapper")
+                .resolve("maven-wrapper.properties");
+        if (Files.exists(wrapperProperties)) {
+            try (var in = Files.newInputStream(wrapperProperties)) {
+                Properties wp = new Properties();
+                wp.load(in);
+                String distUrl = wp.getProperty("distributionUrl");
+                if (!isBlank(distUrl)) {
+                    DefaultArtifact d = artifactFromMavenUrl(distUrl);
+                    if (d != null) {
+                        mavenVersion = d.getVersion();
+                        mavenVersionSource = "Maven wrapper (.mvn/wrapper/maven-wrapper.properties)";
+                        mavenDistroCandidate = d;
+                    } else {
+                        print("  Warning: could not parse distributionUrl: " + distUrl);
+                    }
+                }
+            } catch (Exception e) {
+                print("  Warning: could not parse maven-wrapper.properties: " + e.getMessage());
+            }
+        }
+
+        if (mavenVersion == null) {
+            try {
+                ProcessBuilder pb = new ProcessBuilder("mvn", "--version");
+                pb.redirectErrorStream(true);
+                Process p = pb.start();
+                String out = new String(p.getInputStream().readAllBytes());
+                p.waitFor();
+                String marker = "Apache Maven ";
+                int idx = out.indexOf(marker);
+                if (idx >= 0) {
+                    int s = idx + marker.length();
+                    int e = s;
+                    while (e < out.length() && !Character.isWhitespace(out.charAt(e))) e++;
+                    String v = out.substring(s, e).trim();
+                    if (!v.isEmpty()) {
+                        mavenVersion = v;
+                        mavenVersionSource = "'mvn --version' on PATH";
+                    }
+                }
+            } catch (Exception ignored) {
+                // fall through to the no-version-detected case
+            }
+        }
+
+        if (mavenVersion == null) {
+            print("  Maven version: unknown — no wrapper configured and no 'mvn' on PATH.");
+            print("  Lifecycle-bound plugins will not be included in the analysis.");
+        } else {
+            print("  Maven version: " + mavenVersion + " (source: " + mavenVersionSource + ")");
+        }
+        print("");
+
         // ── Step 1: Parse project POM files ──────────────────────────────────
         print("Collecting project structure...");
 
@@ -239,18 +302,31 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
             List<DefaultArtifact> parentPomCandidates = new ArrayList<>();
             List<Dependency> directDeps = new ArrayList<>();
 
-            print("Building effective POM model...");
+            print("Building effective POM model(s)...");
             MavenModelReader modelReader = new MavenModelReader(context);
-            try {
-                ModelResponse rootResponse = modelReader.readModel(
-                        ModelRequest.builder().setPomFile(rootPom).build());
+            int modelsBuilt = 0;
+            Set<String> reactorPackagings = new LinkedHashSet<>();
+            for (Path pomFile : pomFiles) {
+                try {
+                    ModelResponse response = modelReader.readModel(
+                            ModelRequest.builder().setPomFile(pomFile).build());
 
-                Model effectiveModel = rootResponse.getEffectiveModel();
-                Build build = effectiveModel.getBuild();
-                if (build != null) {
-                    PluginManagement pm = build.getPluginManagement();
-                    if (pm != null) {
-                        for (Plugin p : pm.getPlugins()) {
+                    Model effectiveModel = response.getEffectiveModel();
+                    String pkg = effectiveModel.getPackaging();
+                    reactorPackagings.add(isBlank(pkg) ? "jar" : pkg);
+                    Build build = effectiveModel.getBuild();
+                    if (build != null) {
+                        PluginManagement pm = build.getPluginManagement();
+                        if (pm != null) {
+                            for (Plugin p : pm.getPlugins()) {
+                                if (!isBlank(p.getVersion())) {
+                                    pluginCandidates.putIfAbsent(
+                                            p.getGroupId() + ":" + p.getArtifactId(),
+                                            new DefaultArtifact(p.getGroupId(), p.getArtifactId(), "jar", p.getVersion()));
+                                }
+                            }
+                        }
+                        for (Plugin p : build.getPlugins()) {
                             if (!isBlank(p.getVersion())) {
                                 pluginCandidates.putIfAbsent(
                                         p.getGroupId() + ":" + p.getArtifactId(),
@@ -258,51 +334,45 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
                             }
                         }
                     }
-                    for (Plugin p : build.getPlugins()) {
-                        if (!isBlank(p.getVersion())) {
-                            pluginCandidates.putIfAbsent(
-                                    p.getGroupId() + ":" + p.getArtifactId(),
-                                    new DefaultArtifact(p.getGroupId(), p.getArtifactId(), "jar", p.getVersion()));
+
+                    for (String modelId : response.getLineage()) {
+                        if (isBlank(modelId)) continue;
+                        String[] parts = modelId.split(":");
+                        if (parts.length != 3) continue;
+                        String g = parts[0], a = parts[1], v = parts[2];
+                        if (isBlank(g) || isBlank(a) || isBlank(v)) continue;
+                        String coord = g + ":" + a + ":" + v;
+                        if (!reactorCoords.contains(coord)) {
+                            parentPomCandidates.add(new DefaultArtifact(g, a, "pom", v));
                         }
                     }
-                }
 
-                for (String modelId : rootResponse.getLineage()) {
-                    if (isBlank(modelId)) continue;
-                    String[] parts = modelId.split(":");
-                    if (parts.length != 3) continue;
-                    String g = parts[0], a = parts[1], v = parts[2];
-                    if (isBlank(g) || isBlank(a) || isBlank(v)) continue;
-                    String coord = g + ":" + a + ":" + v;
-                    if (!reactorCoords.contains(coord)) {
-                        parentPomCandidates.add(new DefaultArtifact(g, a, "pom", v));
+                    // Collect direct deps from effective model — this resolves BOM-managed versions
+                    // that the DOM-based Pass 2 cannot follow.
+                    for (org.apache.maven.model.Dependency d : effectiveModel.getDependencies()) {
+                        String g = d.getGroupId();
+                        String a = d.getArtifactId();
+                        String v = d.getVersion();
+                        String scope = isBlank(d.getScope()) ? "compile" : d.getScope();
+                        String type = isBlank(d.getType()) ? "jar" : d.getType();
+                        if (isBlank(g) || isBlank(a) || isBlank(v)) continue;
+                        if ("import".equals(scope)) continue;
+                        String coord = g + ":" + a + ":" + v;
+                        if (reactorCoords.contains(coord)) continue;
+                        directDeps.add(new Dependency(new DefaultArtifact(g, a, type, v), scope));
                     }
+
+                    modelsBuilt++;
+                } catch (Exception e) {
+                    print("  Warning: could not build effective model for "
+                            + projectDir.toAbsolutePath().relativize(pomFile.toAbsolutePath())
+                            + ": " + e.getMessage());
                 }
-
-                // Collect direct deps from effective model — this resolves BOM-managed versions
-                // that the DOM-based Pass 2 cannot follow.
-                for (org.apache.maven.model.Dependency d : effectiveModel.getDependencies()) {
-                    String g = d.getGroupId();
-                    String a = d.getArtifactId();
-                    String v = d.getVersion();
-                    String scope = isBlank(d.getScope()) ? "compile" : d.getScope();
-                    String type = isBlank(d.getType()) ? "jar" : d.getType();
-                    if (isBlank(g) || isBlank(a) || isBlank(v)) continue;
-                    if ("import".equals(scope)) continue;
-                    String coord = g + ":" + a + ":" + v;
-                    if (reactorCoords.contains(coord)) continue;
-                    directDeps.add(new Dependency(new DefaultArtifact(g, a, type, v), scope));
-                }
-
-                print("  Effective model built — "
-                        + pluginCandidates.size() + " plugin(s) found, "
-                        + parentPomCandidates.size() + " parent POM(s) in lineage, "
-                        + directDeps.size() + " direct dep(s).");
-
-            } catch (Exception e) {
-                print("  Warning: effective model could not be built: " + e.getMessage());
-                print("  Falling back to DOM-based dependency and plugin collection.");
             }
+            print("  Effective model built for " + modelsBuilt + " of " + pomFiles.size()
+                    + " module(s) — " + pluginCandidates.size() + " plugin(s), "
+                    + parentPomCandidates.size() + " parent POM(s) in lineage, "
+                    + directDeps.size() + " direct dep(s).");
             print("");
 
             // ── 2b: Resolve transitive dependency tree ────────────────────────
@@ -352,6 +422,81 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
                                 pluginCandidates, properties);
                     }
                 }
+            }
+
+            // ── 2c0: Lifecycle-bound plugins from maven-core/default-bindings.xml
+            // Maven binds a set of plugins to each packaging's default lifecycle
+            // (e.g. compiler/jar/surefire for "jar" packaging). These bindings live
+            // in maven-core's META-INF/plexus/default-bindings.xml and are NOT part
+            // of the effective POM model, so we need to load them explicitly.
+            if (mavenVersion != null && !reactorPackagings.isEmpty()) {
+                print("Resolving lifecycle-bound plugins from maven-core " + mavenVersion + "...");
+                DefaultArtifact mavenCoreArtifact = new DefaultArtifact(
+                        "org.apache.maven", "maven-core", "jar", mavenVersion);
+                try {
+                    ArtifactRequest req = new ArtifactRequest(
+                            mavenCoreArtifact, context.remoteRepositories(), null);
+                    ArtifactResult result = context.repositorySystem()
+                            .resolveArtifact(context.repositorySystemSession(), req);
+                    File coreJar = result.getArtifact().getFile();
+                    Map<String, List<DefaultArtifact>> bindingsByPackaging = new LinkedHashMap<>();
+                    try (java.util.jar.JarFile jar = new java.util.jar.JarFile(coreJar)) {
+                        java.util.jar.JarEntry entry = jar.getJarEntry("META-INF/plexus/default-bindings.xml");
+                        if (entry == null) {
+                            print("  Warning: default-bindings.xml not found in maven-core JAR.");
+                        } else {
+                            try (java.io.InputStream is = jar.getInputStream(entry)) {
+                                Document bindingsDoc = db.parse(is);
+                                NodeList components = bindingsDoc.getElementsByTagName("component");
+                                for (int i = 0; i < components.getLength(); i++) {
+                                    Element comp = (Element) components.item(i);
+                                    String role = directText(comp, "role");
+                                    if (!"org.apache.maven.lifecycle.mapping.LifecycleMapping".equals(role)) continue;
+                                    String roleHint = directText(comp, "role-hint");
+                                    if (isBlank(roleHint)) continue;
+                                    Element config = directElement(comp, "configuration");
+                                    if (config == null) continue;
+                                    List<DefaultArtifact> plugins = new ArrayList<>();
+                                    // Newer schema (3.9+): configuration > lifecycles > lifecycle > phases.
+                                    Element lifecycles = directElement(config, "lifecycles");
+                                    if (lifecycles != null) {
+                                        NodeList lifecycleList = lifecycles.getElementsByTagName("lifecycle");
+                                        for (int j = 0; j < lifecycleList.getLength(); j++) {
+                                            Element lifecycle = (Element) lifecycleList.item(j);
+                                            Element phases = directElement(lifecycle, "phases");
+                                            if (phases != null) extractPluginsFromPhases(phases, plugins);
+                                        }
+                                    } else {
+                                        // Older schema: configuration > phases.
+                                        Element phases = directElement(config, "phases");
+                                        if (phases != null) extractPluginsFromPhases(phases, plugins);
+                                    }
+                                    bindingsByPackaging.put(roleHint, plugins);
+                                }
+                            }
+                            print("  Loaded lifecycle bindings for " + bindingsByPackaging.size()
+                                    + " packaging type(s).");
+                        }
+                    }
+                    int added = 0;
+                    for (String packaging : reactorPackagings) {
+                        List<DefaultArtifact> plugins = bindingsByPackaging.get(packaging);
+                        if (plugins == null) continue;
+                        for (DefaultArtifact p : plugins) {
+                            String key = p.getGroupId() + ":" + p.getArtifactId();
+                            if (!pluginCandidates.containsKey(key)) {
+                                pluginCandidates.put(key, p);
+                                added++;
+                            }
+                        }
+                    }
+                    print("  Added " + added + " lifecycle plugin(s) for packagings: "
+                            + reactorPackagings);
+                } catch (Exception e) {
+                    print("  Warning: could not load maven-core " + mavenVersion + ": "
+                            + e.getMessage());
+                }
+                print("");
             }
 
             // ── 2c: Resolve parent POM files and plugin JARs ─────────────────
@@ -601,45 +746,26 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
             }
 
             // ── 2h: Maven wrapper distribution ───────────────────────────────
-            // If the project uses the Maven wrapper, parse its distributionUrl and
-            // resolve the configured Maven binary distribution from the repository.
+            // If a wrapper distributionUrl was identified in Step 0, resolve the
+            // configured binary distribution from the repository so it shows up
+            // as a build requirement.
             Artifact resolvedMavenDistribution = null;
             String mavenDistributionCoords = null;
-            Path wrapperProperties = projectDir.resolve(".mvn").resolve("wrapper")
-                    .resolve("maven-wrapper.properties");
-            if (Files.exists(wrapperProperties)) {
-                print("Detecting Maven wrapper distribution...");
-                try (var in = Files.newInputStream(wrapperProperties)) {
-                    Properties wp = new Properties();
-                    wp.load(in);
-                    String distUrl = wp.getProperty("distributionUrl");
-                    if (isBlank(distUrl)) {
-                        print("  Warning: distributionUrl not found in maven-wrapper.properties");
-                    } else {
-                        DefaultArtifact distArtifact = artifactFromMavenUrl(distUrl);
-                        if (distArtifact == null) {
-                            print("  Warning: could not parse Maven distribution URL: " + distUrl);
-                        } else {
-                            String coords = artifactCoords(distArtifact);
-                            try {
-                                ArtifactRequest req = new ArtifactRequest(
-                                        distArtifact, context.remoteRepositories(), null);
-                                ArtifactResult result = context.repositorySystem()
-                                        .resolveArtifact(context.repositorySystemSession(), req);
-                                resolvedMavenDistribution = result.getArtifact();
-                                mavenDistributionCoords = coords;
-                                allCoords.add(coords);
-                                print("  Maven distribution: " + coords);
-                            } catch (Exception e) {
-                                print("  Warning: could not resolve Maven distribution "
-                                        + coords + ": " + e.getMessage());
-                            }
-                        }
-                    }
+            if (mavenDistroCandidate != null) {
+                String coords = artifactCoords(mavenDistroCandidate);
+                try {
+                    ArtifactRequest req = new ArtifactRequest(
+                            mavenDistroCandidate, context.remoteRepositories(), null);
+                    ArtifactResult result = context.repositorySystem()
+                            .resolveArtifact(context.repositorySystemSession(), req);
+                    resolvedMavenDistribution = result.getArtifact();
+                    mavenDistributionCoords = coords;
+                    allCoords.add(coords);
                 } catch (Exception e) {
-                    print("  Warning: could not parse maven-wrapper.properties: " + e.getMessage());
+                    print("  Warning: could not resolve Maven distribution "
+                            + coords + ": " + e.getMessage());
+                    print("");
                 }
-                print("");
             }
 
             // ── Step 3: Print resolved artifact lists ─────────────────────────
@@ -854,6 +980,33 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
 
     private boolean isBlank(String s) {
         return s == null || s.isBlank();
+    }
+
+    /**
+     * Extracts plugin coordinates from a {@code <phases>} element in
+     * {@code default-bindings.xml}. Each phase child element's text is one or
+     * more comma-separated mojo coordinates ({@code g:a:v:goal}); we keep the
+     * GAV and dedupe per phases block by {@code g:a}.
+     */
+    private void extractPluginsFromPhases(Element phases, List<DefaultArtifact> out) {
+        NodeList children = phases.getChildNodes();
+        Set<String> seen = new LinkedHashSet<>();
+        for (int i = 0; i < children.getLength(); i++) {
+            if (!(children.item(i) instanceof Element phaseEl)) continue;
+            String txt = phaseEl.getTextContent().trim();
+            for (String coord : txt.split(",")) {
+                coord = coord.trim();
+                if (coord.isEmpty()) continue;
+                String[] parts = coord.split(":");
+                if (parts.length < 3) continue;
+                String g = parts[0], a = parts[1], v = parts[2];
+                if (isBlank(g) || isBlank(a) || isBlank(v)) continue;
+                String key = g + ":" + a;
+                if (seen.add(key)) {
+                    out.add(new DefaultArtifact(g, a, "jar", v));
+                }
+            }
+        }
     }
 
     /**
