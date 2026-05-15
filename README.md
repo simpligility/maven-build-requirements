@@ -10,9 +10,19 @@ project from source and feed downstream tools such as the coverage checker for
 [Chainguard Libraries for Java](https://www.chainguard.dev/libraries) for
 further analysis.
 
-Uses [mima](https://maveniverse.eu/docs/mima/) and the MMR extension to build effective
-POM models, walk the full dependency tree, and capture plugins and parent POMs, including
-each plugin's own transitive dependencies and parent lineage.
+The scope is *everything* needed to build the project from source — not
+just the runtime/compile dependency tree:
+
+- The project's own transitive dependency tree across all reactor modules
+  (the same set `mvn dependency:tree` would produce).
+- Every plugin used by the build — explicitly declared *and* implicitly
+  bound to a packaging's default lifecycle via Maven core — together
+  with each plugin's parent POM lineage and full transitive dependency
+  tree.
+- Build extensions from `.mvn/extensions.xml`, again with parent POMs
+  and transitive dependencies.
+- The project's own parent POM lineage.
+- The Maven binary distribution declared by the project's wrapper.
 
 ## Requirements
 
@@ -43,6 +53,37 @@ Flags:
 The tool also writes a sorted, deduplicated list of artifact coordinates to
 `maven-build-requirements-coords.txt` alongside the report.
 
+## Limitations
+
+The analyzer covers the project's full transitive dependency tree and then
+goes further — plugins, their parent POMs and transitive deps,
+lifecycle-bound plugins, build extensions and their deps, parent POM
+lineage, and the Maven distribution itself. A few corners of Maven's
+model aren't (yet) honoured:
+
+- **Plugin `<dependencies>` overrides in the effective POM** are not
+  applied when computing a plugin's transitive tree. The analyzer walks
+  each plugin's published POM — so a project that injects an extra
+  dependency into, say, `maven-surefire-plugin` via
+  `<plugin><dependencies>` will see the *published* tree only.
+- **Cross-version super POM**: the analyzer now consults the
+  wrapper-specified Maven version's super POM for plugin defaults, but
+  doesn't yet override the defaults that mima's bundled model-builder
+  applied while building the effective model. Plugins declared
+  *without* a version may report the mima-bundled default instead of the
+  wrapper-version's default.
+- **Local repository must be populated**. The analyzer reads from your
+  local Maven cache; if an artifact isn't there yet, run a Maven build
+  of the target project first (e.g. `mvn -DskipTests install`) so
+  everything is resolved.
+- **Profile activation reflects the analyzer's JVM/OS**, not necessarily
+  the build machine. Profiles activated by JDK version, OS, or file
+  presence are evaluated where the analyzer runs.
+- **Maven 4 not yet validated**. The lifecycle-binding and super POM
+  loaders target the 3.9.x layout. Pointing the analyzer at a Maven-4
+  project may work for the resolution flow but the version-specific
+  defaults won't be applied correctly.
+
 ## Test projects
 
 The `src/it/projects/` directory contains example Maven projects for trying the tool:
@@ -61,3 +102,12 @@ The script packages the analyzer with `./mvnw package` and then invokes it
 in each test project's directory, leaving `maven-build-requirements-results.txt`
 and `maven-build-requirements-coords.txt` next to that project's `pom.xml`
 (overwriting any existing files there).
+
+## Thanks
+
+This tool leans heavily on [mima](https://maveniverse.eu/docs/mima/) from the
+[Maveniverse](https://maveniverse.eu/) project. mima bootstraps Maven Resolver
+from a standalone context, and its MMR extension builds effective POM models
+with parent inheritance and plugin management already applied. Without mima
+this analyzer would essentially be reimplementing Maven's model-builder by
+hand — many thanks to its authors and maintainers.
