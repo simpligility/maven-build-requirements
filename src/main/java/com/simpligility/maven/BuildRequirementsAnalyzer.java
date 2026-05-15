@@ -5,6 +5,8 @@ import module java.xml;
 
 import com.simpligility.maven.analysis.MavenEnvironmentDetector;
 import com.simpligility.maven.analysis.ProgressLogger;
+import com.simpligility.maven.analysis.ProjectStructure;
+import com.simpligility.maven.analysis.ProjectStructureLoader;
 import com.simpligility.maven.util.Coords;
 import com.simpligility.maven.util.Dom;
 import eu.maveniverse.maven.mima.context.Context;
@@ -116,117 +118,11 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
         DefaultArtifact mavenDistroCandidate = env.distributionCandidate();
 
         // ── Step 1: Parse project POM files ──────────────────────────────────
-        print("Collecting project structure...");
-
-        List<Path> pomFiles = new ArrayList<>();
-        pomFiles.add(rootPom);
-        collectSubModulePoms(rootPom, pomFiles, db);
-
-        // Pass 1: collect reactor coordinates, properties, and dependency management
-        Set<String> reactorCoords = new LinkedHashSet<>();
-        Map<String, String> properties = new LinkedHashMap<>();
-        Map<String, String> managed = new LinkedHashMap<>();
-        String rootGroupId = null;
-        String rootVersion = null;
-
-        for (int i = 0; i < pomFiles.size(); i++) {
-            Document doc = db.parse(pomFiles.get(i).toFile());
-            Element project = doc.getDocumentElement();
-
-            String groupId = Dom.directText(project, "groupId");
-            String artifactId = Dom.directText(project, "artifactId");
-            String version = Dom.directText(project, "version");
-
-            Element parent = Dom.directElement(project, "parent");
-            if (parent != null) {
-                if (isBlank(groupId)) groupId = Dom.directText(parent, "groupId");
-                if (isBlank(version)) version = Dom.directText(parent, "version");
-            }
-
-            if (i == 0) {
-                rootGroupId = groupId;
-                rootVersion = version;
-                properties.put("project.version", rootVersion);
-                properties.put("project.groupId", rootGroupId);
-                properties.put("revision", rootVersion);
-            }
-            if (isBlank(groupId)) groupId = rootGroupId;
-            if (isBlank(version)) version = rootVersion;
-
-            Element propsEl = Dom.directElement(project, "properties");
-            if (propsEl != null) {
-                NodeList propNodes = propsEl.getChildNodes();
-                for (int k = 0; k < propNodes.getLength(); k++) {
-                    if (propNodes.item(k) instanceof Element propEl) {
-                        properties.putIfAbsent(propEl.getTagName(), propEl.getTextContent().trim());
-                    }
-                }
-            }
-
-            Element dmEl = Dom.directElement(project, "dependencyManagement");
-            if (dmEl != null) {
-                Element depsEl = Dom.directElement(dmEl, "dependencies");
-                if (depsEl != null) {
-                    NodeList depNodes = depsEl.getElementsByTagName("dependency");
-                    for (int k = 0; k < depNodes.getLength(); k++) {
-                        Element dep = (Element) depNodes.item(k);
-                        String dmG = Dom.directText(dep, "groupId");
-                        String dmA = Dom.directText(dep, "artifactId");
-                        String dmV = Dom.directText(dep, "version");
-                        if (!isBlank(dmG) && !isBlank(dmA) && !isBlank(dmV)) {
-                            managed.putIfAbsent(dmG + ":" + dmA, dmV);
-                        }
-                    }
-                }
-            }
-
-            if (!isBlank(artifactId) && !isBlank(groupId) && !isBlank(version)) {
-                String coord = groupId + ":" + artifactId + ":" + version;
-                reactorCoords.add(coord);
-                print("  Reactor module: " + coord);
-            }
-        }
-        print("");
-
-        // Pass 2: collect declared dependency coordinates
-        Map<String, Dependency> uniqueDeps = new LinkedHashMap<>();
-
-        for (Path pomFile : pomFiles) {
-            Document doc = db.parse(pomFile.toFile());
-            Element project = doc.getDocumentElement();
-
-            Element dependenciesEl = Dom.directElement(project, "dependencies");
-            if (dependenciesEl == null) continue;
-
-            NodeList depNodes = dependenciesEl.getElementsByTagName("dependency");
-            for (int j = 0; j < depNodes.getLength(); j++) {
-                Element dep = (Element) depNodes.item(j);
-                String depG = Dom.directText(dep, "groupId");
-                String depA = Dom.directText(dep, "artifactId");
-                String depV = Dom.directText(dep, "version");
-                String depScope = Dom.directText(dep, "scope");
-                String depType = Dom.directText(dep, "type");
-
-                if (isBlank(depG) || isBlank(depA)) continue;
-
-                if (isBlank(depV)) depV = managed.get(depG + ":" + depA);
-                if (!isBlank(depV) && depV.startsWith("${")) {
-                    String propName = depV.substring(2, depV.length() - 1);
-                    depV = properties.get(propName);
-                    if (isBlank(depV) || depV.startsWith("${")) depV = managed.get(depG + ":" + depA);
-                }
-                if (isBlank(depV)) continue;
-
-                if (isBlank(depScope)) depScope = "compile";
-                if (isBlank(depType)) depType = "jar";
-
-                String depCoord = depG + ":" + depA + ":" + depV;
-                if (reactorCoords.contains(depCoord)) continue;
-
-                uniqueDeps.putIfAbsent(depG + ":" + depA,
-                        new Dependency(new DefaultArtifact(depG, depA, depType, depV), depScope));
-            }
-        }
+        ProjectStructure structure = new ProjectStructureLoader(logger, db).load(rootPom);
+        List<Path> pomFiles = structure.pomFiles();
+        Set<String> reactorCoords = structure.reactorCoords();
+        Map<String, String> properties = structure.properties();
+        Map<String, Dependency> uniqueDeps = structure.declaredDependencies();
 
         // ── Step 2: Resolve everything via mima ───────────────────────────────
         print("Resolving with Maven Resolver...");
@@ -835,22 +731,6 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
         }
     }
 
-
-    private void collectSubModulePoms(Path pomFile, List<Path> result, DocumentBuilder db) throws Exception {
-        Document doc = db.parse(pomFile.toFile());
-        Element project = doc.getDocumentElement();
-        Element modules = Dom.directElement(project, "modules");
-        if (modules == null) return;
-        NodeList moduleNodes = modules.getElementsByTagName("module");
-        for (int i = 0; i < moduleNodes.getLength(); i++) {
-            String moduleName = moduleNodes.item(i).getTextContent().trim();
-            Path modulePom = pomFile.getParent().resolve(moduleName).resolve("pom.xml");
-            if (Files.exists(modulePom) && !result.contains(modulePom)) {
-                result.add(modulePom);
-                collectSubModulePoms(modulePom, result, db);
-            }
-        }
-    }
 
     private boolean isBlank(String s) {
         return s == null || s.isBlank();
