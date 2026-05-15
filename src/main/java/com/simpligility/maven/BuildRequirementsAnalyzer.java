@@ -3,6 +3,7 @@ package com.simpligility.maven;
 import module java.base;
 import module java.xml;
 
+import com.simpligility.maven.analysis.MavenEnvironmentDetector;
 import com.simpligility.maven.analysis.ProgressLogger;
 import com.simpligility.maven.util.Coords;
 import com.simpligility.maven.util.Dom;
@@ -109,67 +110,10 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
         print("");
 
         // ── Step 0: Maven environment ────────────────────────────────────────
-        // Determine the Maven version we will use for lifecycle bindings and
-        // (when the wrapper is configured) for the binary distribution listing.
-        // Prefer the wrapper-defined version; otherwise fall back to `mvn` on PATH.
-        print("Detecting Maven environment...");
-        String mavenVersion = null;
-        String mavenVersionSource = null;
-        DefaultArtifact mavenDistroCandidate = null;
-
-        Path wrapperProperties = projectDir.resolve(".mvn").resolve("wrapper")
-                .resolve("maven-wrapper.properties");
-        if (Files.exists(wrapperProperties)) {
-            try (var in = Files.newInputStream(wrapperProperties)) {
-                Properties wp = new Properties();
-                wp.load(in);
-                String distUrl = wp.getProperty("distributionUrl");
-                if (!isBlank(distUrl)) {
-                    DefaultArtifact d = Coords.artifactFromMavenUrl(distUrl);
-                    if (d != null) {
-                        mavenVersion = d.getVersion();
-                        mavenVersionSource = "Maven wrapper (.mvn/wrapper/maven-wrapper.properties)";
-                        mavenDistroCandidate = d;
-                    } else {
-                        print("  Warning: could not parse distributionUrl: " + distUrl);
-                    }
-                }
-            } catch (Exception e) {
-                print("  Warning: could not parse maven-wrapper.properties: " + e.getMessage());
-            }
-        }
-
-        if (mavenVersion == null) {
-            try {
-                ProcessBuilder pb = new ProcessBuilder("mvn", "--version");
-                pb.redirectErrorStream(true);
-                Process p = pb.start();
-                String out = new String(p.getInputStream().readAllBytes());
-                p.waitFor();
-                String marker = "Apache Maven ";
-                int idx = out.indexOf(marker);
-                if (idx >= 0) {
-                    int s = idx + marker.length();
-                    int e = s;
-                    while (e < out.length() && !Character.isWhitespace(out.charAt(e))) e++;
-                    String v = out.substring(s, e).trim();
-                    if (!v.isEmpty()) {
-                        mavenVersion = v;
-                        mavenVersionSource = "'mvn --version' on PATH";
-                    }
-                }
-            } catch (Exception _) {
-                // fall through to the no-version-detected case
-            }
-        }
-
-        if (mavenVersion == null) {
-            print("  Maven version: unknown — no wrapper configured and no 'mvn' on PATH.");
-            print("  Lifecycle-bound plugins will not be included in the analysis.");
-        } else {
-            print("  Maven version: " + mavenVersion + " (source: " + mavenVersionSource + ")");
-        }
-        print("");
+        MavenEnvironmentDetector.Result env =
+                new MavenEnvironmentDetector(logger, projectDir).detect();
+        String mavenVersion = env.version();
+        DefaultArtifact mavenDistroCandidate = env.distributionCandidate();
 
         // ── Step 1: Parse project POM files ──────────────────────────────────
         print("Collecting project structure...");
