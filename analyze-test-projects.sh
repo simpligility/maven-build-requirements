@@ -10,7 +10,10 @@ cd "$(dirname "$0")"
 
 ./mvnw -q package
 
-JAR="$(pwd)/target/maven-build-requirements-1.0-SNAPSHOT.jar"
+# Copy the version-stamped shaded jar to a stable name so this script
+# doesn't have to track the project's version.
+cp target/maven-build-requirements-*.jar target/maven-build-requirements.jar
+JAR="$(pwd)/target/maven-build-requirements.jar"
 
 for project in quickstart-example multi-module-example spring-boot-example; do
     echo
