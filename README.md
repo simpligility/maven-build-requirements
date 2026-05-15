@@ -5,8 +5,10 @@ and writes the resolved artifact coordinates and a human-readable report to
 disk. Compared to a simple dependency list, the resulting list includes all
 dependencies necessary to build the project.
 
-Designed to feed downstream tools such as the coverage checker for [Chainguard
-Libraries for Java](https://www.chainguard.dev/libraries) .
+Designed to better understand your requirements to build a specific Maven
+project from source and feed downstream tools such as the coverage checker for
+[Chainguard Libraries for Java](https://www.chainguard.dev/libraries) for
+further analysis.
 
 Uses [mima](https://maveniverse.eu/docs/mima/) and the MMR extension to build effective
 POM models, walk the full dependency tree, and capture plugins and parent POMs, including
