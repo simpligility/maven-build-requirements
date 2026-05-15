@@ -16,6 +16,7 @@ import com.simpligility.maven.analysis.ProgressLogger;
 import com.simpligility.maven.analysis.ProjectStructure;
 import com.simpligility.maven.analysis.ProjectStructureLoader;
 import com.simpligility.maven.analysis.ReportWriter;
+import com.simpligility.maven.analysis.SuperPomLoader;
 import com.simpligility.maven.util.Dom;
 import eu.maveniverse.maven.mima.context.Context;
 import eu.maveniverse.maven.mima.context.ContextOverrides;
@@ -81,6 +82,7 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
                 EffectiveModelBuilder.Result model =
                         new EffectiveModelBuilder(ctx).build(structure);
                 new DependencyResolver(ctx).resolve(structure, model, analysis);
+                new SuperPomLoader(ctx).load(env.version(), model.pluginCandidates());
                 new LifecyclePluginLoader(ctx).load(
                         env.version(), model.reactorPackagings(), model.pluginCandidates());
                 new PluginAnalyzer(ctx).analyze(
