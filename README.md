@@ -1,4 +1,4 @@
-# Maven Build Requirements
+# maven-build-requirements
 
 A tool that analyzes a Maven project's dependencies, plugins, and parent POMs
 and writes the resolved artifact coordinates and a human-readable report to
@@ -16,7 +16,6 @@ each plugin's own transitive dependencies and parent lineage.
 
 ## Requirements
 
-- [Apache Maven](https://maven.apache.org/) 3.9+ on your `PATH`
 - JDK 25+ to build and run
 - A successfully built Maven project with dependencies resolved to the local cache
 
@@ -51,3 +50,14 @@ The `src/it/projects/` directory contains example Maven projects for trying the 
 - `quickstart-example` — minimal Maven quickstart project
 - `multi-module-example` — multi-module project with compile, runtime, and test dependencies
 - `spring-boot-example` — Spring Boot application with web, JPA, security, and actuator
+
+To build the analyzer and run it against all three test projects in one go:
+
+```bash
+./analyze-test-projects.sh
+```
+
+The script packages the analyzer with `./mvnw package` and then invokes it
+in each test project's directory, leaving `maven-build-requirements-results.txt`
+and `maven-build-requirements-coords.txt` next to that project's `pom.xml`
+(overwriting any existing files there).
