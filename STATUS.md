@@ -145,6 +145,102 @@ documented 2026-05-14 baselines exactly:
 - `multi-module-example`: **394** artifacts
 - `spring-boot-example`: **822** artifacts
 
+## Helper script: `analyze-test-projects.sh`
+
+Top-level one-shot that packages the analyzer with `./mvnw -q
+package` and then runs it against each fixture under
+`src/it/projects/`, `cd`-ing into each project so the result and
+coords files land next to that project's `pom.xml` (overwriting
+whatever's there). This is the same sweep used to validate every
+commit in today's modernization and refactor work — now reusable
+from one command.
+
+To stay version-agnostic, the script `cp`s
+`target/maven-build-requirements-*.jar` to a stable
+`target/maven-build-requirements.jar` after the package phase and
+invokes that. The glob only matches the shaded jar (the
+`original-*` pre-shade copy and the stable copy itself both have
+different prefixes), so a future `pom.xml` version bump won't
+require a script edit.
+
+README's "Test projects" section updated to point at the script.
+Top-level H1 lowercased to match the artifactId, and the redundant
+"Apache Maven 3.9+ on `PATH`" line dropped from "Requirements"
+(the project ships a wrapper, and the analyzer only shells out to
+`mvn` as a fallback when no wrapper is configured).
+
+## Super POM loader
+
+New `SuperPomLoader` in `com.simpligility.maven.analysis`, wired
+into `BuildRequirementsAnalyzer.call()` between `DependencyResolver`
+and `LifecyclePluginLoader`. Mirrors the `LifecyclePluginLoader`
+pattern: resolve
+`org.apache.maven:maven-model-builder:<wrapper-version>`, open the
+jar, parse `org/apache/maven/model/pom-4.0.0.xml`, and merge any
+plugins from the super POM's `<pluginManagement>` into the plugin
+candidate map via `putIfAbsent` (so explicit project versions
+always win).
+
+The super POM in 3.9.x's `<pluginManagement>` currently has just
+four plugins — `maven-antrun-plugin`, `maven-assembly-plugin`,
+`maven-dependency-plugin`, `maven-release-plugin` — and a comment
+notes they're being phased out (MNG-4453). None of the three IT
+fixtures declares any of these without an explicit version, so the
+loader reports `Added 0 super POM plugin default(s).` for all
+three and artifact counts are unchanged (435 / 394 / 822).
+
+This narrowly closes the "Cross-version super POM" item from the
+prior status entry: the analyzer now consults the wrapper-version's
+super POM rather than mima's bundled 3.9.x default. The fully
+correct fix — *overriding* plugin versions that mima's bundled
+super POM filled in for explicitly-declared-but-version-less
+plugins — would still require deeper mima plumbing; left as a
+follow-up.
+
+## Outstanding tasks
+
+Carried forward from prior entries plus a few items surfaced
+during today's work. Nothing here is blocking.
+
+### Open
+
+- **Super POM override semantics**: `SuperPomLoader` now merges
+  super POM plugins into the candidate map for the wrapper-version,
+  but doesn't *override* mima's bundled-super-POM defaults that
+  were applied during effective-model construction. A project that
+  declares e.g. `maven-assembly-plugin` without a version still
+  ends up with whatever default mima's bundled 3.9.x super POM
+  picked, not the wrapper-version's default. The fully correct fix
+  needs the analyzer to also re-parse each raw `pom.xml` to find
+  no-version plugin declarations and only override those.
+- **No `--version` output**: `-V, --version` is enabled via
+  picocli's `mixinStandardHelpOptions` but no `IVersionProvider`
+  is wired up, so the flag prints an empty line. Should at least
+  print the project's `pom.xml` version, ideally also the mima/
+  toolbox versions it was built against.
+- **No unit tests**: the three IT fixtures serve as integration
+  smoke tests but there's no JUnit suite. Lowest-friction targets
+  for unit coverage now that the refactor's landed: `Dom`
+  (`directText`/`directElement`/`elements`/`newDocumentBuilder`)
+  and `Coords` (especially `artifactFromMavenUrl`, which has
+  enough URL-parsing branches to be worth pinning down).
+- **maven-invoker-plugin not wired up**: `src/it/projects/` is the
+  standard invoker layout but the plugin isn't configured. Today
+  the fixtures are validated by hand or via
+  `analyze-test-projects.sh`. Wiring up invoker would let CI run
+  them.
+
+### Nice-to-have
+
+- **Failure mode when local cache is empty**: the analyzer
+  surfaces raw mima resolver errors when the user hasn't run
+  `mvn install` yet. A clearer up-front message ("no artifacts in
+  local cache; run `mvn dependency:resolve` first") would
+  improve onboarding.
+- **maven-shade-plugin overlapping-resource warnings**: cosmetic
+  but loud at build time. Could be silenced with explicit
+  filter/transformer config in `pom.xml`.
+
 ---
 
 # Status report — 2026-05-14
