@@ -3,6 +3,10 @@ package com.simpligility.maven;
 import module java.base;
 import module java.xml;
 
+import com.simpligility.maven.analysis.AnalysisContext;
+import com.simpligility.maven.analysis.AnalysisResult;
+import com.simpligility.maven.analysis.DependencyResolver;
+import com.simpligility.maven.analysis.EffectiveModelBuilder;
 import com.simpligility.maven.analysis.MavenEnvironmentDetector;
 import com.simpligility.maven.analysis.ProgressLogger;
 import com.simpligility.maven.analysis.ProjectStructure;
@@ -134,132 +138,19 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
         try (Context context = runtime.create(
                 ContextOverrides.create().withUserSettings(true).build())) {
 
+            AnalysisContext analysisCtx = AnalysisContext.create(context, logger, projectDir);
+            AnalysisResult analysis = new AnalysisResult();
+            MavenModelReader modelReader = analysisCtx.modelReader();
+
             // ── 2a: Build effective POM via MavenModelReader (MMR extension) ──
-            Map<String, DefaultArtifact> pluginCandidates = new LinkedHashMap<>();
-            List<DefaultArtifact> parentPomCandidates = new ArrayList<>();
-            List<Dependency> directDeps = new ArrayList<>();
-
-            print("Building effective POM model(s)...");
-            MavenModelReader modelReader = new MavenModelReader(context);
-            int modelsBuilt = 0;
-            Set<String> reactorPackagings = new LinkedHashSet<>();
-            for (Path pomFile : pomFiles) {
-                try {
-                    ModelResponse response = modelReader.readModel(
-                            ModelRequest.builder().setPomFile(pomFile).build());
-
-                    Model effectiveModel = response.getEffectiveModel();
-                    String pkg = effectiveModel.getPackaging();
-                    reactorPackagings.add(isBlank(pkg) ? "jar" : pkg);
-                    Build build = effectiveModel.getBuild();
-                    if (build != null) {
-                        PluginManagement pm = build.getPluginManagement();
-                        if (pm != null) {
-                            for (Plugin p : pm.getPlugins()) {
-                                if (!isBlank(p.getVersion())) {
-                                    pluginCandidates.putIfAbsent(
-                                            p.getGroupId() + ":" + p.getArtifactId(),
-                                            new DefaultArtifact(p.getGroupId(), p.getArtifactId(), "jar", p.getVersion()));
-                                }
-                            }
-                        }
-                        for (Plugin p : build.getPlugins()) {
-                            if (!isBlank(p.getVersion())) {
-                                pluginCandidates.putIfAbsent(
-                                        p.getGroupId() + ":" + p.getArtifactId(),
-                                        new DefaultArtifact(p.getGroupId(), p.getArtifactId(), "jar", p.getVersion()));
-                            }
-                        }
-                    }
-
-                    for (String modelId : response.getLineage()) {
-                        if (isBlank(modelId)) continue;
-                        String[] parts = modelId.split(":");
-                        if (parts.length != 3) continue;
-                        String g = parts[0], a = parts[1], v = parts[2];
-                        if (isBlank(g) || isBlank(a) || isBlank(v)) continue;
-                        String coord = g + ":" + a + ":" + v;
-                        if (!reactorCoords.contains(coord)) {
-                            parentPomCandidates.add(new DefaultArtifact(g, a, "pom", v));
-                        }
-                    }
-
-                    // Collect direct deps from effective model — this resolves BOM-managed versions
-                    // that the DOM-based Pass 2 cannot follow.
-                    for (org.apache.maven.model.Dependency d : effectiveModel.getDependencies()) {
-                        String g = d.getGroupId();
-                        String a = d.getArtifactId();
-                        String v = d.getVersion();
-                        String scope = isBlank(d.getScope()) ? "compile" : d.getScope();
-                        String type = isBlank(d.getType()) ? "jar" : d.getType();
-                        if (isBlank(g) || isBlank(a) || isBlank(v)) continue;
-                        if ("import".equals(scope)) continue;
-                        String coord = g + ":" + a + ":" + v;
-                        if (reactorCoords.contains(coord)) continue;
-                        directDeps.add(new Dependency(new DefaultArtifact(g, a, type, v), scope));
-                    }
-
-                    modelsBuilt++;
-                } catch (Exception e) {
-                    print("  Warning: could not build effective model for "
-                            + projectDir.toAbsolutePath().relativize(pomFile.toAbsolutePath())
-                            + ": " + e.getMessage());
-                }
-            }
-            print("  Effective model built for " + modelsBuilt + " of " + pomFiles.size()
-                    + " module(s) — " + pluginCandidates.size() + " plugin(s), "
-                    + parentPomCandidates.size() + " parent POM(s) in lineage, "
-                    + directDeps.size() + " direct dep(s).");
-            print("");
+            EffectiveModelBuilder.Result model =
+                    new EffectiveModelBuilder(analysisCtx).build(structure);
+            Map<String, DefaultArtifact> pluginCandidates = model.pluginCandidates();
+            List<DefaultArtifact> parentPomCandidates = model.parentPomCandidates();
+            Set<String> reactorPackagings = model.reactorPackagings();
 
             // ── 2b: Resolve transitive dependency tree ────────────────────────
-            // Use effective model deps when available (handles BOM imports); fall back to DOM-parsed deps.
-            List<Dependency> depsForResolution = directDeps.isEmpty()
-                    ? new ArrayList<>(uniqueDeps.values())
-                    : directDeps;
-            CollectRequest collectRequest = new CollectRequest();
-            collectRequest.setDependencies(depsForResolution);
-            collectRequest.setRepositories(context.remoteRepositories());
-
-            CollectResult collectResult = context.repositorySystem()
-                    .collectDependencies(context.repositorySystemSession(), collectRequest);
-
-            context.repositorySystem()
-                    .resolveDependencies(context.repositorySystemSession(),
-                            new DependencyRequest(collectResult.getRoot(), null));
-
-            Map<String, Map<String, Artifact>> byScope = new LinkedHashMap<>();
-            PreorderNodeListGenerator nlg = new PreorderNodeListGenerator();
-            collectResult.getRoot().accept(nlg);
-
-            for (DependencyNode node : nlg.getNodes()) {
-                if (node.getDependency() == null) continue;
-                Artifact artifact = node.getArtifact();
-                String scope = node.getDependency().getScope();
-                String reactorKey = artifact.getGroupId() + ":" + artifact.getArtifactId()
-                        + ":" + artifact.getVersion();
-                if (reactorCoords.contains(reactorKey)) continue;
-                String ac = Coords.artifactCoords(artifact);
-                byScope.computeIfAbsent(scope, k -> new LinkedHashMap<>()).putIfAbsent(ac, artifact);
-                allCoords.add(ac);
-            }
-
-            // Also scan sub-module poms for any explicitly versioned plugins that might not
-            // appear in the root's effective model (e.g., declared only in a sub-module).
-            for (int i = 1; i < pomFiles.size(); i++) {
-                Document doc = db.parse(pomFiles.get(i).toFile());
-                Element project = doc.getDocumentElement();
-                Element buildEl = Dom.directElement(project, "build");
-                if (buildEl != null) {
-                    collectPluginsFromSection(Dom.directElement(buildEl, "plugins"),
-                            pluginCandidates, properties);
-                    Element pmEl = Dom.directElement(buildEl, "pluginManagement");
-                    if (pmEl != null) {
-                        collectPluginsFromSection(Dom.directElement(pmEl, "plugins"),
-                                pluginCandidates, properties);
-                    }
-                }
-            }
+            new DependencyResolver(analysisCtx).resolve(structure, model, analysis);
 
             // ── 2c0: Lifecycle-bound plugins from maven-core/default-bindings.xml
             // Maven binds a set of plugins to each packaging's default lifecycle
@@ -608,7 +499,8 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
             // ── Step 3: Print resolved artifact lists ─────────────────────────
             print("Resolved dependencies:");
             print("");
-            byScope.values().forEach(scope -> scope.forEach(this::printArtifactLine));
+            analysis.dependenciesByScope().values().forEach(
+                    scope -> scope.forEach(logger::printArtifactLine));
             print("");
 
             if (!resolvedParentPoms.isEmpty()) {
@@ -670,7 +562,7 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
             print("=======================================================================");
             print("");
 
-            int depCount = byScope.values().stream().mapToInt(Map::size).sum();
+            int depCount = analysis.dependencyCount();
             int mavenDistCount = resolvedMavenDistribution != null ? 1 : 0;
             int artifactCount = depCount + resolvedParentPoms.size() + resolvedPlugins.size()
                     + resolvedPluginParentPoms.size() + resolvedPluginDeps.size()
@@ -693,6 +585,7 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
             print(summary.toString());
             print("");
 
+            allCoords.addAll(analysis.allCoords());
             Files.write(coordsFile, allCoords);
             print("Coordinates saved to:  " + coordsFile.toAbsolutePath());
             print("");
@@ -703,34 +596,6 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
         logger.close();
         return 0;
     }
-
-    /// Collects explicitly-versioned plugins from a DOM `<plugins>` element.
-    private void collectPluginsFromSection(Element pluginsEl,
-                                           Map<String, DefaultArtifact> pluginCandidates,
-                                           Map<String, String> properties) {
-        if (pluginsEl == null) return;
-        NodeList pluginNodes = pluginsEl.getElementsByTagName("plugin");
-        for (int i = 0; i < pluginNodes.getLength(); i++) {
-            Element plugin = (Element) pluginNodes.item(i);
-            String pg = Dom.directText(plugin, "groupId");
-            String pa = Dom.directText(plugin, "artifactId");
-            String pv = Dom.directText(plugin, "version");
-
-            if (isBlank(pg)) pg = "org.apache.maven.plugins";
-            if (isBlank(pa)) continue;
-
-            if (!isBlank(pv) && pv.startsWith("${")) {
-                String propName = pv.substring(2, pv.length() - 1);
-                String resolved = properties.get(propName);
-                if (!isBlank(resolved) && !resolved.startsWith("${")) pv = resolved;
-            }
-            if (isBlank(pv) || pv.startsWith("${")) continue;
-
-            pluginCandidates.putIfAbsent(pg + ":" + pa,
-                    new DefaultArtifact(pg, pa, "jar", pv));
-        }
-    }
-
 
     private boolean isBlank(String s) {
         return s == null || s.isBlank();
