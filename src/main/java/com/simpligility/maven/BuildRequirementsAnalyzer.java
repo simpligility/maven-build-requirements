@@ -62,6 +62,10 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
             description = "Output file (default: maven-build-requirements-results.txt)")
     private Path outputFile = Paths.get("maven-build-requirements-results.txt");
 
+    @Option(names = {"--paths"},
+            description = "Append each artifact's local repository path after its GAV (default: false)")
+    private boolean showPaths = false;
+
     private static final List<String> SCOPE_ORDER =
             List.of("compile", "runtime", "provided", "test", "system", "import");
 
@@ -71,6 +75,16 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
         System.out.println(line);
         writer.println(line);
         writer.flush();
+    }
+
+    private void printArtifactLine(String coords, Artifact artifact) {
+        if (showPaths) {
+            File file = artifact.getFile();
+            String pathStr = file != null ? file.getAbsolutePath() : "NOT FOUND in local cache";
+            print("  " + coords + "  " + pathStr);
+        } else {
+            print("  " + coords);
+        }
     }
 
     @Override
@@ -773,96 +787,78 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
             print("");
             for (Map<String, Artifact> scopeArtifacts : byScope.values()) {
                 for (Map.Entry<String, Artifact> e : scopeArtifacts.entrySet()) {
-                    print("  " + e.getKey());
-                    File file = e.getValue().getFile();
-                    print("  " + (file != null ? file.getAbsolutePath() : "NOT FOUND in local cache"));
-                    print("");
+                    printArtifactLine(e.getKey(), e.getValue());
                 }
             }
+            print("");
 
             if (!resolvedParentPoms.isEmpty()) {
                 print("Parent POMs:");
                 print("");
                 for (Map.Entry<String, Artifact> e : resolvedParentPoms.entrySet()) {
-                    print("  " + e.getKey());
-                    File file = e.getValue().getFile();
-                    print("  " + (file != null ? file.getAbsolutePath() : "NOT FOUND in local cache"));
-                    print("");
+                    printArtifactLine(e.getKey(), e.getValue());
                 }
+                print("");
             }
 
             if (!resolvedPlugins.isEmpty()) {
                 print("Plugins:");
                 print("");
                 for (Map.Entry<String, Artifact> e : resolvedPlugins.entrySet()) {
-                    print("  " + e.getKey());
-                    File file = e.getValue().getFile();
-                    print("  " + (file != null ? file.getAbsolutePath() : "NOT FOUND in local cache"));
-                    print("");
+                    printArtifactLine(e.getKey(), e.getValue());
                 }
+                print("");
             }
 
             if (!resolvedPluginParentPoms.isEmpty()) {
                 print("Plugin parent POMs:");
                 print("");
                 for (Map.Entry<String, Artifact> e : resolvedPluginParentPoms.entrySet()) {
-                    print("  " + e.getKey());
-                    File file = e.getValue().getFile();
-                    print("  " + (file != null ? file.getAbsolutePath() : "NOT FOUND in local cache"));
-                    print("");
+                    printArtifactLine(e.getKey(), e.getValue());
                 }
+                print("");
             }
 
             if (!resolvedPluginDeps.isEmpty()) {
                 print("Plugin dependencies:");
                 print("");
                 for (Map.Entry<String, Artifact> e : resolvedPluginDeps.entrySet()) {
-                    print("  " + e.getKey());
-                    File file = e.getValue().getFile();
-                    print("  " + (file != null ? file.getAbsolutePath() : "NOT FOUND in local cache"));
-                    print("");
+                    printArtifactLine(e.getKey(), e.getValue());
                 }
+                print("");
             }
 
             if (!resolvedExtensions.isEmpty()) {
                 print("Extensions:");
                 print("");
                 for (Map.Entry<String, Artifact> e : resolvedExtensions.entrySet()) {
-                    print("  " + e.getKey());
-                    File file = e.getValue().getFile();
-                    print("  " + (file != null ? file.getAbsolutePath() : "NOT FOUND in local cache"));
-                    print("");
+                    printArtifactLine(e.getKey(), e.getValue());
                 }
+                print("");
             }
 
             if (!resolvedExtensionParentPoms.isEmpty()) {
                 print("Extension parent POMs:");
                 print("");
                 for (Map.Entry<String, Artifact> e : resolvedExtensionParentPoms.entrySet()) {
-                    print("  " + e.getKey());
-                    File file = e.getValue().getFile();
-                    print("  " + (file != null ? file.getAbsolutePath() : "NOT FOUND in local cache"));
-                    print("");
+                    printArtifactLine(e.getKey(), e.getValue());
                 }
+                print("");
             }
 
             if (!resolvedExtensionDeps.isEmpty()) {
                 print("Extension dependencies:");
                 print("");
                 for (Map.Entry<String, Artifact> e : resolvedExtensionDeps.entrySet()) {
-                    print("  " + e.getKey());
-                    File file = e.getValue().getFile();
-                    print("  " + (file != null ? file.getAbsolutePath() : "NOT FOUND in local cache"));
-                    print("");
+                    printArtifactLine(e.getKey(), e.getValue());
                 }
+                print("");
             }
 
             if (resolvedMavenDistribution != null) {
                 print("Maven distribution:");
                 print("");
-                print("  " + mavenDistributionCoords);
-                File file = resolvedMavenDistribution.getFile();
-                print("  " + (file != null ? file.getAbsolutePath() : "NOT FOUND in local cache"));
+                printArtifactLine(mavenDistributionCoords, resolvedMavenDistribution);
                 print("");
             }
 
