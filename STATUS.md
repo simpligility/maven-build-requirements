@@ -50,6 +50,64 @@
 
 - `./mvnw clean compile` succeeds.
 
+## Output and analysis improvements
+
+Iterative additions during the same session (commits `eef6a67` →
+`abbd00d`):
+
+- Output filenames changed to `maven-build-requirements-{results,coords}.txt`
+  (no more `chainguard-check-java-*`).
+- Report header now includes the analyzed project's `Group ID`,
+  `Artifact ID`, and `Version` (parent fallback applied). Retitled
+  to "Maven build requirements analysis".
+- Parse `.mvn/extensions.xml`. Each declared extension is treated
+  like a plugin: extension JAR + parent POM lineage + transitive
+  deps all flow into the report. Three new sections + three new
+  summary counters.
+- Added `mimir 0.11.3` (`eu.maveniverse.maven.mimir:extension3`) to
+  `spring-boot-example/.mvn/extensions.xml` so the new code path is
+  exercised by an example.
+- Maven wrapper distribution: if `.mvn/wrapper/maven-wrapper.properties`
+  is present, parse the `distributionUrl` and add the binary
+  distribution as a build requirement.
+- New Step 0 "Maven environment" detects the Maven version to use
+  for lifecycle and reports the source: wrapper distributionUrl
+  preferred, `mvn --version` on PATH as fallback, warning otherwise.
+- Effective POM models now built for **every** reactor pom (root +
+  sub-modules), not just the root. Critical for multi-module
+  projects with `packaging=pom` roots.
+- Lifecycle-bound plugins (compiler/jar/surefire/resources/install/
+  deploy/...) loaded by resolving `org.apache.maven:maven-core:<ver>`
+  and parsing its `META-INF/plexus/default-bindings.xml`, then
+  injected into the plugin candidate set per module packaging.
+- Tightened report layout: one line per artifact, no blank lines
+  between entries. New `--paths` flag (default false) optionally
+  appends the local repo path on the same line as the GAV.
+
+### Verified
+
+- All three example projects run end-to-end via the shaded JAR:
+  - `quickstart-example`: 435 artifacts
+  - `multi-module-example`: 394 artifacts (was 252 before lifecycle
+    plugins; added 6 lifecycle plugins → +12 plugin parent POMs and
+    +124 plugin transitive deps)
+  - `spring-boot-example`: 822 artifacts (incl. 1 extension + 2
+    extension parent POMs + 40 extension deps + 1 Maven distribution)
+- Local-`mvn` fallback for Maven version detection verified by
+  temporarily hiding the wrapper config: tool used `mvn 3.9.15` from
+  PATH and reported the source correctly.
+
+### Known limitations / next steps
+
+- Super POM is still loaded from whatever Maven model-builder mima
+  bundles (3.9.x), not from the wrapper-specified Maven version.
+  Cross-version super POM swapping would require deeper plumbing.
+- `BuildRequirementsAnalyzer.java` is now ~900 lines as one class.
+  Captured in a project memory as the next refactor: split the
+  monolith into a small CLI orchestrator plus per-task helpers
+  (env detection, effective models, lifecycle bindings, plugin/
+  extension resolvers, report writer).
+
 ---
 
 # Status report — 2026-05-01
