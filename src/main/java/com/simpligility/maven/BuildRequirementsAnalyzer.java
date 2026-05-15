@@ -7,7 +7,9 @@ import com.simpligility.maven.analysis.AnalysisContext;
 import com.simpligility.maven.analysis.AnalysisResult;
 import com.simpligility.maven.analysis.DependencyResolver;
 import com.simpligility.maven.analysis.EffectiveModelBuilder;
+import com.simpligility.maven.analysis.LifecyclePluginLoader;
 import com.simpligility.maven.analysis.MavenEnvironmentDetector;
+import com.simpligility.maven.analysis.PluginAnalyzer;
 import com.simpligility.maven.analysis.ProgressLogger;
 import com.simpligility.maven.analysis.ProjectStructure;
 import com.simpligility.maven.analysis.ProjectStructureLoader;
@@ -153,192 +155,12 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
             new DependencyResolver(analysisCtx).resolve(structure, model, analysis);
 
             // ── 2c0: Lifecycle-bound plugins from maven-core/default-bindings.xml
-            // Maven binds a set of plugins to each packaging's default lifecycle
-            // (e.g. compiler/jar/surefire for "jar" packaging). These bindings live
-            // in maven-core's META-INF/plexus/default-bindings.xml and are NOT part
-            // of the effective POM model, so we need to load them explicitly.
-            if (mavenVersion != null && !reactorPackagings.isEmpty()) {
-                print("Resolving lifecycle-bound plugins from maven-core " + mavenVersion + "...");
-                DefaultArtifact mavenCoreArtifact = new DefaultArtifact(
-                        "org.apache.maven", "maven-core", "jar", mavenVersion);
-                try {
-                    ArtifactRequest req = new ArtifactRequest(
-                            mavenCoreArtifact, context.remoteRepositories(), null);
-                    ArtifactResult result = context.repositorySystem()
-                            .resolveArtifact(context.repositorySystemSession(), req);
-                    File coreJar = result.getArtifact().getFile();
-                    Map<String, List<DefaultArtifact>> bindingsByPackaging = new LinkedHashMap<>();
-                    try (JarFile jar = new JarFile(coreJar)) {
-                        JarEntry entry = jar.getJarEntry("META-INF/plexus/default-bindings.xml");
-                        if (entry == null) {
-                            print("  Warning: default-bindings.xml not found in maven-core JAR.");
-                        } else {
-                            try (InputStream is = jar.getInputStream(entry)) {
-                                Document bindingsDoc = db.parse(is);
-                                NodeList components = bindingsDoc.getElementsByTagName("component");
-                                for (int i = 0; i < components.getLength(); i++) {
-                                    Element comp = (Element) components.item(i);
-                                    String role = Dom.directText(comp, "role");
-                                    if (!"org.apache.maven.lifecycle.mapping.LifecycleMapping".equals(role)) continue;
-                                    String roleHint = Dom.directText(comp, "role-hint");
-                                    if (isBlank(roleHint)) continue;
-                                    Element config = Dom.directElement(comp, "configuration");
-                                    if (config == null) continue;
-                                    List<DefaultArtifact> plugins = new ArrayList<>();
-                                    // Newer schema (3.9+): configuration > lifecycles > lifecycle > phases.
-                                    Element lifecycles = Dom.directElement(config, "lifecycles");
-                                    if (lifecycles != null) {
-                                        NodeList lifecycleList = lifecycles.getElementsByTagName("lifecycle");
-                                        for (int j = 0; j < lifecycleList.getLength(); j++) {
-                                            Element lifecycle = (Element) lifecycleList.item(j);
-                                            Element phases = Dom.directElement(lifecycle, "phases");
-                                            if (phases != null) extractPluginsFromPhases(phases, plugins);
-                                        }
-                                    } else {
-                                        // Older schema: configuration > phases.
-                                        Element phases = Dom.directElement(config, "phases");
-                                        if (phases != null) extractPluginsFromPhases(phases, plugins);
-                                    }
-                                    bindingsByPackaging.put(roleHint, plugins);
-                                }
-                            }
-                            print("  Loaded lifecycle bindings for " + bindingsByPackaging.size()
-                                    + " packaging type(s).");
-                        }
-                    }
-                    int added = 0;
-                    for (String packaging : reactorPackagings) {
-                        List<DefaultArtifact> plugins = bindingsByPackaging.get(packaging);
-                        if (plugins == null) continue;
-                        for (DefaultArtifact p : plugins) {
-                            String key = p.getGroupId() + ":" + p.getArtifactId();
-                            if (!pluginCandidates.containsKey(key)) {
-                                pluginCandidates.put(key, p);
-                                added++;
-                            }
-                        }
-                    }
-                    print("  Added " + added + " lifecycle plugin(s) for packagings: "
-                            + reactorPackagings);
-                } catch (Exception e) {
-                    print("  Warning: could not load maven-core " + mavenVersion + ": "
-                            + e.getMessage());
-                }
-                print("");
-            }
+            new LifecyclePluginLoader(analysisCtx)
+                    .load(mavenVersion, reactorPackagings, pluginCandidates);
 
-            // ── 2c: Resolve parent POM files and plugin JARs ─────────────────
-            Map<String, Artifact> resolvedParentPoms = new LinkedHashMap<>();
-            for (DefaultArtifact candidate : parentPomCandidates) {
-                String coords = Coords.artifactCoords(candidate);
-                try {
-                    ArtifactRequest req = new ArtifactRequest(candidate, context.remoteRepositories(), null);
-                    ArtifactResult result = context.repositorySystem()
-                            .resolveArtifact(context.repositorySystemSession(), req);
-                    resolvedParentPoms.put(coords, result.getArtifact());
-                    allCoords.add(coords);
-                } catch (Exception e) {
-                    print("  Warning: could not resolve parent POM " + coords + ": " + e.getMessage());
-                }
-            }
-
-            Map<String, Artifact> resolvedPlugins = new LinkedHashMap<>();
-            for (Map.Entry<String, DefaultArtifact> entry : pluginCandidates.entrySet()) {
-                DefaultArtifact candidate = entry.getValue();
-                String coords = Coords.artifactCoords(candidate);
-                try {
-                    ArtifactRequest req = new ArtifactRequest(candidate, context.remoteRepositories(), null);
-                    ArtifactResult result = context.repositorySystem()
-                            .resolveArtifact(context.repositorySystemSession(), req);
-                    resolvedPlugins.put(coords, result.getArtifact());
-                    allCoords.add(coords);
-                } catch (Exception e) {
-                    print("  Warning: could not resolve plugin " + coords + ": " + e.getMessage());
-                }
-            }
-
-            // ── 2d: Load plugin dependency trees via MMR ─────────────────────
-            print("Loading plugin dependency trees...");
-            Map<String, Artifact> resolvedPluginDeps = new LinkedHashMap<>();
-            List<DefaultArtifact> pluginParentPomCandidates = new ArrayList<>();
-
-            for (Map.Entry<String, DefaultArtifact> pluginEntry : pluginCandidates.entrySet()) {
-                DefaultArtifact pluginArtifact = pluginEntry.getValue();
-                DefaultArtifact pluginPomArtifact = new DefaultArtifact(
-                        pluginArtifact.getGroupId(), pluginArtifact.getArtifactId(),
-                        "pom", pluginArtifact.getVersion());
-                try {
-                    ModelResponse pluginResponse = modelReader.readModel(
-                            ModelRequest.builder().setArtifact(pluginPomArtifact).build());
-                    Model pluginEffective = pluginResponse.getEffectiveModel();
-
-                    String pluginGav = pluginArtifact.getGroupId() + ":"
-                            + pluginArtifact.getArtifactId() + ":" + pluginArtifact.getVersion();
-                    for (String modelId : pluginResponse.getLineage()) {
-                        if (isBlank(modelId) || modelId.equals(pluginGav)) continue;
-                        String[] parts = modelId.split(":");
-                        if (parts.length != 3) continue;
-                        String g = parts[0], a = parts[1], v = parts[2];
-                        if (isBlank(g) || isBlank(a) || isBlank(v)) continue;
-                        pluginParentPomCandidates.add(new DefaultArtifact(g, a, "pom", v));
-                    }
-
-                    List<Dependency> pluginDirectDeps = new ArrayList<>();
-                    for (org.apache.maven.model.Dependency d : pluginEffective.getDependencies()) {
-                        String g = d.getGroupId(), a = d.getArtifactId(), v = d.getVersion();
-                        String scope = isBlank(d.getScope()) ? "compile" : d.getScope();
-                        String type = isBlank(d.getType()) ? "jar" : d.getType();
-                        if (isBlank(g) || isBlank(a) || isBlank(v)) continue;
-                        if ("import".equals(scope)) continue;
-                        pluginDirectDeps.add(new Dependency(new DefaultArtifact(g, a, type, v), scope));
-                    }
-                    if (!pluginDirectDeps.isEmpty()) {
-                        CollectRequest pluginCollect = new CollectRequest();
-                        pluginCollect.setDependencies(pluginDirectDeps);
-                        pluginCollect.setRepositories(context.remoteRepositories());
-                        CollectResult pluginCollectResult = context.repositorySystem()
-                                .collectDependencies(context.repositorySystemSession(), pluginCollect);
-                        context.repositorySystem().resolveDependencies(context.repositorySystemSession(),
-                                new DependencyRequest(pluginCollectResult.getRoot(), null));
-                        PreorderNodeListGenerator pluginNlg = new PreorderNodeListGenerator();
-                        pluginCollectResult.getRoot().accept(pluginNlg);
-                        for (DependencyNode depNode : pluginNlg.getNodes()) {
-                            if (depNode.getDependency() == null) continue;
-                            Artifact depArtifact = depNode.getArtifact();
-                            String reactorKey = depArtifact.getGroupId() + ":"
-                                    + depArtifact.getArtifactId() + ":" + depArtifact.getVersion();
-                            if (reactorCoords.contains(reactorKey)) continue;
-                            String depCoords = Coords.artifactCoords(depArtifact);
-                            if (!resolvedPlugins.containsKey(depCoords)) {
-                                resolvedPluginDeps.putIfAbsent(depCoords, depArtifact);
-                                allCoords.add(depCoords);
-                            }
-                        }
-                    }
-                } catch (Exception e) {
-                    print("  Warning: could not load plugin model for "
-                            + pluginEntry.getKey() + ": " + e.getMessage());
-                }
-            }
-
-            Map<String, Artifact> resolvedPluginParentPoms = new LinkedHashMap<>();
-            for (DefaultArtifact candidate : pluginParentPomCandidates) {
-                String coords = Coords.artifactCoords(candidate);
-                if (resolvedPluginParentPoms.containsKey(coords)) continue;
-                if (resolvedParentPoms.containsKey(coords)) continue;
-                try {
-                    ArtifactRequest req = new ArtifactRequest(candidate, context.remoteRepositories(), null);
-                    ArtifactResult result = context.repositorySystem()
-                            .resolveArtifact(context.repositorySystemSession(), req);
-                    resolvedPluginParentPoms.put(coords, result.getArtifact());
-                    allCoords.add(coords);
-                } catch (Exception e) {
-                    print("  Warning: could not resolve plugin parent POM " + coords + ": " + e.getMessage());
-                }
-            }
-            print("  Plugin trees loaded — " + resolvedPluginDeps.size() + " dep(s), "
-                    + resolvedPluginParentPoms.size() + " plugin parent POM(s).");
-            print("");
+            // ── 2c + 2d: Project parent POMs, plugin JARs, plugin dep trees ──
+            new PluginAnalyzer(analysisCtx)
+                    .analyze(pluginCandidates, parentPomCandidates, structure, analysis);
 
             // ── 2e: Collect extensions from .mvn/extensions.xml ──────────────
             Map<String, DefaultArtifact> extensionCandidates = new LinkedHashMap<>();
@@ -455,8 +277,8 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
             for (DefaultArtifact candidate : extensionParentPomCandidates) {
                 String coords = Coords.artifactCoords(candidate);
                 if (resolvedExtensionParentPoms.containsKey(coords)) continue;
-                if (resolvedParentPoms.containsKey(coords)) continue;
-                if (resolvedPluginParentPoms.containsKey(coords)) continue;
+                if (analysis.parentPoms().containsKey(coords)) continue;
+                if (analysis.pluginParentPoms().containsKey(coords)) continue;
                 try {
                     ArtifactRequest req = new ArtifactRequest(candidate, context.remoteRepositories(), null);
                     ArtifactResult result = context.repositorySystem()
@@ -503,31 +325,31 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
                     scope -> scope.forEach(logger::printArtifactLine));
             print("");
 
-            if (!resolvedParentPoms.isEmpty()) {
+            if (!analysis.parentPoms().isEmpty()) {
                 print("Parent POMs:");
                 print("");
-                resolvedParentPoms.forEach(this::printArtifactLine);
+                analysis.parentPoms().forEach(this::printArtifactLine);
                 print("");
             }
 
-            if (!resolvedPlugins.isEmpty()) {
+            if (!analysis.plugins().isEmpty()) {
                 print("Plugins:");
                 print("");
-                resolvedPlugins.forEach(this::printArtifactLine);
+                analysis.plugins().forEach(this::printArtifactLine);
                 print("");
             }
 
-            if (!resolvedPluginParentPoms.isEmpty()) {
+            if (!analysis.pluginParentPoms().isEmpty()) {
                 print("Plugin parent POMs:");
                 print("");
-                resolvedPluginParentPoms.forEach(this::printArtifactLine);
+                analysis.pluginParentPoms().forEach(this::printArtifactLine);
                 print("");
             }
 
-            if (!resolvedPluginDeps.isEmpty()) {
+            if (!analysis.pluginDeps().isEmpty()) {
                 print("Plugin dependencies:");
                 print("");
-                resolvedPluginDeps.forEach(this::printArtifactLine);
+                analysis.pluginDeps().forEach(this::printArtifactLine);
                 print("");
             }
 
@@ -564,17 +386,17 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
 
             int depCount = analysis.dependencyCount();
             int mavenDistCount = resolvedMavenDistribution != null ? 1 : 0;
-            int artifactCount = depCount + resolvedParentPoms.size() + resolvedPlugins.size()
-                    + resolvedPluginParentPoms.size() + resolvedPluginDeps.size()
+            int artifactCount = depCount + analysis.parentPoms().size() + analysis.plugins().size()
+                    + analysis.pluginParentPoms().size() + analysis.pluginDeps().size()
                     + resolvedExtensions.size() + resolvedExtensionParentPoms.size()
                     + resolvedExtensionDeps.size() + mavenDistCount;
             StringBuilder summary = new StringBuilder("Found ").append(artifactCount)
                     .append(" artifact(s) (")
                     .append(depCount).append(" project deps, ")
-                    .append(resolvedParentPoms.size()).append(" project parent POMs, ")
-                    .append(resolvedPlugins.size()).append(" plugins, ")
-                    .append(resolvedPluginParentPoms.size()).append(" plugin parent POMs, ")
-                    .append(resolvedPluginDeps.size()).append(" plugin deps, ")
+                    .append(analysis.parentPoms().size()).append(" project parent POMs, ")
+                    .append(analysis.plugins().size()).append(" plugins, ")
+                    .append(analysis.pluginParentPoms().size()).append(" plugin parent POMs, ")
+                    .append(analysis.pluginDeps().size()).append(" plugin deps, ")
                     .append(resolvedExtensions.size()).append(" extensions, ")
                     .append(resolvedExtensionParentPoms.size()).append(" extension parent POMs, ")
                     .append(resolvedExtensionDeps.size()).append(" extension deps");
@@ -599,30 +421,6 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
 
     private boolean isBlank(String s) {
         return s == null || s.isBlank();
-    }
-
-    /// Extracts plugin coordinates from a `<phases>` element in `default-bindings.xml`.
-    /// Each phase child element's text is one or more comma-separated mojo coordinates
-    /// (`g:a:v:goal`); we keep the GAV and dedupe per phases block by `g:a`.
-    private void extractPluginsFromPhases(Element phases, List<DefaultArtifact> out) {
-        NodeList children = phases.getChildNodes();
-        Set<String> seen = new LinkedHashSet<>();
-        for (int i = 0; i < children.getLength(); i++) {
-            if (!(children.item(i) instanceof Element phaseEl)) continue;
-            String txt = phaseEl.getTextContent().trim();
-            for (String coord : txt.split(",")) {
-                coord = coord.trim();
-                if (coord.isEmpty()) continue;
-                String[] parts = coord.split(":");
-                if (parts.length < 3) continue;
-                String g = parts[0], a = parts[1], v = parts[2];
-                if (isBlank(g) || isBlank(a) || isBlank(v)) continue;
-                String key = g + ":" + a;
-                if (seen.add(key)) {
-                    out.add(new DefaultArtifact(g, a, "jar", v));
-                }
-            }
-        }
     }
 
     public static void main(String[] args) {
