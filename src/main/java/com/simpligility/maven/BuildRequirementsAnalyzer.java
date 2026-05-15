@@ -7,7 +7,9 @@ import com.simpligility.maven.analysis.AnalysisContext;
 import com.simpligility.maven.analysis.AnalysisResult;
 import com.simpligility.maven.analysis.DependencyResolver;
 import com.simpligility.maven.analysis.EffectiveModelBuilder;
+import com.simpligility.maven.analysis.ExtensionAnalyzer;
 import com.simpligility.maven.analysis.LifecyclePluginLoader;
+import com.simpligility.maven.analysis.MavenDistributionResolver;
 import com.simpligility.maven.analysis.MavenEnvironmentDetector;
 import com.simpligility.maven.analysis.PluginAnalyzer;
 import com.simpligility.maven.analysis.ProgressLogger;
@@ -162,161 +164,11 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
             new PluginAnalyzer(analysisCtx)
                     .analyze(pluginCandidates, parentPomCandidates, structure, analysis);
 
-            // ── 2e: Collect extensions from .mvn/extensions.xml ──────────────
-            Map<String, DefaultArtifact> extensionCandidates = new LinkedHashMap<>();
-            Path extensionsXml = projectDir.resolve(".mvn").resolve("extensions.xml");
-            if (Files.exists(extensionsXml)) {
-                print("Collecting extensions from .mvn/extensions.xml...");
-                try {
-                    Document extDoc = db.parse(extensionsXml.toFile());
-                    Element extRoot = extDoc.getDocumentElement();
-                    NodeList extNodes = extRoot.getElementsByTagName("extension");
-                    for (int i = 0; i < extNodes.getLength(); i++) {
-                        Element ext = (Element) extNodes.item(i);
-                        String eg = Dom.directText(ext, "groupId");
-                        String ea = Dom.directText(ext, "artifactId");
-                        String ev = Dom.directText(ext, "version");
-                        if (isBlank(eg) || isBlank(ea) || isBlank(ev)) continue;
-                        if (ev.startsWith("${")) {
-                            String propName = ev.substring(2, ev.length() - 1);
-                            String resolved = properties.get(propName);
-                            if (!isBlank(resolved) && !resolved.startsWith("${")) ev = resolved;
-                        }
-                        if (ev.startsWith("${")) continue;
-                        extensionCandidates.putIfAbsent(eg + ":" + ea,
-                                new DefaultArtifact(eg, ea, "jar", ev));
-                    }
-                    print("  Found " + extensionCandidates.size() + " extension(s).");
-                } catch (Exception e) {
-                    print("  Warning: could not parse extensions.xml: " + e.getMessage());
-                }
-                print("");
-            }
-
-            // ── 2f: Resolve extension JARs ───────────────────────────────────
-            Map<String, Artifact> resolvedExtensions = new LinkedHashMap<>();
-            for (DefaultArtifact candidate : extensionCandidates.values()) {
-                String coords = Coords.artifactCoords(candidate);
-                try {
-                    ArtifactRequest req = new ArtifactRequest(candidate, context.remoteRepositories(), null);
-                    ArtifactResult result = context.repositorySystem()
-                            .resolveArtifact(context.repositorySystemSession(), req);
-                    resolvedExtensions.put(coords, result.getArtifact());
-                    allCoords.add(coords);
-                } catch (Exception e) {
-                    print("  Warning: could not resolve extension " + coords + ": " + e.getMessage());
-                }
-            }
-
-            // ── 2g: Load extension dependency trees via MMR ──────────────────
-            Map<String, Artifact> resolvedExtensionDeps = new LinkedHashMap<>();
-            List<DefaultArtifact> extensionParentPomCandidates = new ArrayList<>();
-            if (!extensionCandidates.isEmpty()) {
-                print("Loading extension dependency trees...");
-                for (Map.Entry<String, DefaultArtifact> extEntry : extensionCandidates.entrySet()) {
-                    DefaultArtifact extArtifact = extEntry.getValue();
-                    DefaultArtifact extPomArtifact = new DefaultArtifact(
-                            extArtifact.getGroupId(), extArtifact.getArtifactId(),
-                            "pom", extArtifact.getVersion());
-                    try {
-                        ModelResponse extResponse = modelReader.readModel(
-                                ModelRequest.builder().setArtifact(extPomArtifact).build());
-                        Model extEffective = extResponse.getEffectiveModel();
-
-                        String extGav = extArtifact.getGroupId() + ":"
-                                + extArtifact.getArtifactId() + ":" + extArtifact.getVersion();
-                        for (String modelId : extResponse.getLineage()) {
-                            if (isBlank(modelId) || modelId.equals(extGav)) continue;
-                            String[] parts = modelId.split(":");
-                            if (parts.length != 3) continue;
-                            String g = parts[0], a = parts[1], v = parts[2];
-                            if (isBlank(g) || isBlank(a) || isBlank(v)) continue;
-                            extensionParentPomCandidates.add(new DefaultArtifact(g, a, "pom", v));
-                        }
-
-                        List<Dependency> extDirectDeps = new ArrayList<>();
-                        for (org.apache.maven.model.Dependency d : extEffective.getDependencies()) {
-                            String g = d.getGroupId(), a = d.getArtifactId(), v = d.getVersion();
-                            String scope = isBlank(d.getScope()) ? "compile" : d.getScope();
-                            String type = isBlank(d.getType()) ? "jar" : d.getType();
-                            if (isBlank(g) || isBlank(a) || isBlank(v)) continue;
-                            if ("import".equals(scope)) continue;
-                            extDirectDeps.add(new Dependency(new DefaultArtifact(g, a, type, v), scope));
-                        }
-                        if (!extDirectDeps.isEmpty()) {
-                            CollectRequest extCollect = new CollectRequest();
-                            extCollect.setDependencies(extDirectDeps);
-                            extCollect.setRepositories(context.remoteRepositories());
-                            CollectResult extCollectResult = context.repositorySystem()
-                                    .collectDependencies(context.repositorySystemSession(), extCollect);
-                            context.repositorySystem().resolveDependencies(context.repositorySystemSession(),
-                                    new DependencyRequest(extCollectResult.getRoot(), null));
-                            PreorderNodeListGenerator extNlg = new PreorderNodeListGenerator();
-                            extCollectResult.getRoot().accept(extNlg);
-                            for (DependencyNode depNode : extNlg.getNodes()) {
-                                if (depNode.getDependency() == null) continue;
-                                Artifact depArtifact = depNode.getArtifact();
-                                String reactorKey = depArtifact.getGroupId() + ":"
-                                        + depArtifact.getArtifactId() + ":" + depArtifact.getVersion();
-                                if (reactorCoords.contains(reactorKey)) continue;
-                                String depCoords = Coords.artifactCoords(depArtifact);
-                                if (!resolvedExtensions.containsKey(depCoords)) {
-                                    resolvedExtensionDeps.putIfAbsent(depCoords, depArtifact);
-                                    allCoords.add(depCoords);
-                                }
-                            }
-                        }
-                    } catch (Exception e) {
-                        print("  Warning: could not load extension model for "
-                                + extEntry.getKey() + ": " + e.getMessage());
-                    }
-                }
-            }
-
-            Map<String, Artifact> resolvedExtensionParentPoms = new LinkedHashMap<>();
-            for (DefaultArtifact candidate : extensionParentPomCandidates) {
-                String coords = Coords.artifactCoords(candidate);
-                if (resolvedExtensionParentPoms.containsKey(coords)) continue;
-                if (analysis.parentPoms().containsKey(coords)) continue;
-                if (analysis.pluginParentPoms().containsKey(coords)) continue;
-                try {
-                    ArtifactRequest req = new ArtifactRequest(candidate, context.remoteRepositories(), null);
-                    ArtifactResult result = context.repositorySystem()
-                            .resolveArtifact(context.repositorySystemSession(), req);
-                    resolvedExtensionParentPoms.put(coords, result.getArtifact());
-                    allCoords.add(coords);
-                } catch (Exception e) {
-                    print("  Warning: could not resolve extension parent POM " + coords + ": " + e.getMessage());
-                }
-            }
-            if (!extensionCandidates.isEmpty()) {
-                print("  Extension trees loaded — " + resolvedExtensionDeps.size() + " dep(s), "
-                        + resolvedExtensionParentPoms.size() + " extension parent POM(s).");
-                print("");
-            }
+            // ── 2e + 2f + 2g: Extensions ──────────────────────────────────────
+            new ExtensionAnalyzer(analysisCtx).analyze(structure, analysis);
 
             // ── 2h: Maven wrapper distribution ───────────────────────────────
-            // If a wrapper distributionUrl was identified in Step 0, resolve the
-            // configured binary distribution from the repository so it shows up
-            // as a build requirement.
-            Artifact resolvedMavenDistribution = null;
-            String mavenDistributionCoords = null;
-            if (mavenDistroCandidate != null) {
-                String coords = Coords.artifactCoords(mavenDistroCandidate);
-                try {
-                    ArtifactRequest req = new ArtifactRequest(
-                            mavenDistroCandidate, context.remoteRepositories(), null);
-                    ArtifactResult result = context.repositorySystem()
-                            .resolveArtifact(context.repositorySystemSession(), req);
-                    resolvedMavenDistribution = result.getArtifact();
-                    mavenDistributionCoords = coords;
-                    allCoords.add(coords);
-                } catch (Exception e) {
-                    print("  Warning: could not resolve Maven distribution "
-                            + coords + ": " + e.getMessage());
-                    print("");
-                }
-            }
+            new MavenDistributionResolver(analysisCtx).resolve(mavenDistroCandidate, analysis);
 
             // ── Step 3: Print resolved artifact lists ─────────────────────────
             print("Resolved dependencies:");
@@ -353,31 +205,31 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
                 print("");
             }
 
-            if (!resolvedExtensions.isEmpty()) {
+            if (!analysis.extensions().isEmpty()) {
                 print("Extensions:");
                 print("");
-                resolvedExtensions.forEach(this::printArtifactLine);
+                analysis.extensions().forEach(this::printArtifactLine);
                 print("");
             }
 
-            if (!resolvedExtensionParentPoms.isEmpty()) {
+            if (!analysis.extensionParentPoms().isEmpty()) {
                 print("Extension parent POMs:");
                 print("");
-                resolvedExtensionParentPoms.forEach(this::printArtifactLine);
+                analysis.extensionParentPoms().forEach(this::printArtifactLine);
                 print("");
             }
 
-            if (!resolvedExtensionDeps.isEmpty()) {
+            if (!analysis.extensionDeps().isEmpty()) {
                 print("Extension dependencies:");
                 print("");
-                resolvedExtensionDeps.forEach(this::printArtifactLine);
+                analysis.extensionDeps().forEach(this::printArtifactLine);
                 print("");
             }
 
-            if (resolvedMavenDistribution != null) {
+            if (analysis.mavenDistribution() != null) {
                 print("Maven distribution:");
                 print("");
-                printArtifactLine(mavenDistributionCoords, resolvedMavenDistribution);
+                printArtifactLine(analysis.mavenDistributionCoords(), analysis.mavenDistribution());
                 print("");
             }
 
@@ -385,11 +237,11 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
             print("");
 
             int depCount = analysis.dependencyCount();
-            int mavenDistCount = resolvedMavenDistribution != null ? 1 : 0;
+            int mavenDistCount = analysis.mavenDistribution() != null ? 1 : 0;
             int artifactCount = depCount + analysis.parentPoms().size() + analysis.plugins().size()
                     + analysis.pluginParentPoms().size() + analysis.pluginDeps().size()
-                    + resolvedExtensions.size() + resolvedExtensionParentPoms.size()
-                    + resolvedExtensionDeps.size() + mavenDistCount;
+                    + analysis.extensions().size() + analysis.extensionParentPoms().size()
+                    + analysis.extensionDeps().size() + mavenDistCount;
             StringBuilder summary = new StringBuilder("Found ").append(artifactCount)
                     .append(" artifact(s) (")
                     .append(depCount).append(" project deps, ")
@@ -397,9 +249,9 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
                     .append(analysis.plugins().size()).append(" plugins, ")
                     .append(analysis.pluginParentPoms().size()).append(" plugin parent POMs, ")
                     .append(analysis.pluginDeps().size()).append(" plugin deps, ")
-                    .append(resolvedExtensions.size()).append(" extensions, ")
-                    .append(resolvedExtensionParentPoms.size()).append(" extension parent POMs, ")
-                    .append(resolvedExtensionDeps.size()).append(" extension deps");
+                    .append(analysis.extensions().size()).append(" extensions, ")
+                    .append(analysis.extensionParentPoms().size()).append(" extension parent POMs, ")
+                    .append(analysis.extensionDeps().size()).append(" extension deps");
             if (mavenDistCount > 0) {
                 summary.append(", ").append(mavenDistCount).append(" Maven distribution");
             }
