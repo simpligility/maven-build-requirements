@@ -3,6 +3,9 @@ package com.simpligility.maven;
 import module java.base;
 import module java.xml;
 
+import com.simpligility.maven.analysis.ProgressLogger;
+import com.simpligility.maven.util.Coords;
+import com.simpligility.maven.util.Dom;
 import eu.maveniverse.maven.mima.context.Context;
 import eu.maveniverse.maven.mima.context.ContextOverrides;
 import eu.maveniverse.maven.mima.context.Runtime;
@@ -57,22 +60,14 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
     private static final DateTimeFormatter DATE_FORMAT =
             DateTimeFormatter.ofPattern("EEE MMM dd HH:mm:ss zzz yyyy", Locale.ENGLISH);
 
-    private PrintWriter writer;
+    private ProgressLogger logger;
 
     private void print(String line) {
-        System.out.println(line);
-        writer.println(line);
-        writer.flush();
+        logger.print(line);
     }
 
     private void printArtifactLine(String coords, Artifact artifact) {
-        if (showPaths) {
-            File file = artifact.getFile();
-            String pathStr = file != null ? file.getAbsolutePath() : "NOT FOUND in local cache";
-            print("  " + coords + "  " + pathStr);
-        } else {
-            print("  " + coords);
-        }
+        logger.printArtifactLine(coords, artifact);
     }
 
     @Override
@@ -83,7 +78,7 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
             return 1;
         }
 
-        writer = new PrintWriter(Files.newBufferedWriter(outputFile));
+        logger = new ProgressLogger(outputFile, showPaths);
 
         DocumentBuilderFactory dbf = DocumentBuilderFactory.newInstance();
         dbf.setNamespaceAware(false);
@@ -94,13 +89,13 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
         // Parent fallback applies for groupId and version (Maven inheritance).
         Document headerDoc = db.parse(rootPom.toFile());
         Element headerProject = headerDoc.getDocumentElement();
-        String headerGroupId = directText(headerProject, "groupId");
-        String headerArtifactId = directText(headerProject, "artifactId");
-        String headerVersion = directText(headerProject, "version");
-        Element headerParent = directElement(headerProject, "parent");
+        String headerGroupId = Dom.directText(headerProject, "groupId");
+        String headerArtifactId = Dom.directText(headerProject, "artifactId");
+        String headerVersion = Dom.directText(headerProject, "version");
+        Element headerParent = Dom.directElement(headerProject, "parent");
         if (headerParent != null) {
-            if (isBlank(headerGroupId)) headerGroupId = directText(headerParent, "groupId");
-            if (isBlank(headerVersion)) headerVersion = directText(headerParent, "version");
+            if (isBlank(headerGroupId)) headerGroupId = Dom.directText(headerParent, "groupId");
+            if (isBlank(headerVersion)) headerVersion = Dom.directText(headerParent, "version");
         }
 
         print("Maven build requirements analysis");
@@ -130,7 +125,7 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
                 wp.load(in);
                 String distUrl = wp.getProperty("distributionUrl");
                 if (!isBlank(distUrl)) {
-                    DefaultArtifact d = artifactFromMavenUrl(distUrl);
+                    DefaultArtifact d = Coords.artifactFromMavenUrl(distUrl);
                     if (d != null) {
                         mavenVersion = d.getVersion();
                         mavenVersionSource = "Maven wrapper (.mvn/wrapper/maven-wrapper.properties)";
@@ -194,14 +189,14 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
             Document doc = db.parse(pomFiles.get(i).toFile());
             Element project = doc.getDocumentElement();
 
-            String groupId = directText(project, "groupId");
-            String artifactId = directText(project, "artifactId");
-            String version = directText(project, "version");
+            String groupId = Dom.directText(project, "groupId");
+            String artifactId = Dom.directText(project, "artifactId");
+            String version = Dom.directText(project, "version");
 
-            Element parent = directElement(project, "parent");
+            Element parent = Dom.directElement(project, "parent");
             if (parent != null) {
-                if (isBlank(groupId)) groupId = directText(parent, "groupId");
-                if (isBlank(version)) version = directText(parent, "version");
+                if (isBlank(groupId)) groupId = Dom.directText(parent, "groupId");
+                if (isBlank(version)) version = Dom.directText(parent, "version");
             }
 
             if (i == 0) {
@@ -214,7 +209,7 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
             if (isBlank(groupId)) groupId = rootGroupId;
             if (isBlank(version)) version = rootVersion;
 
-            Element propsEl = directElement(project, "properties");
+            Element propsEl = Dom.directElement(project, "properties");
             if (propsEl != null) {
                 NodeList propNodes = propsEl.getChildNodes();
                 for (int k = 0; k < propNodes.getLength(); k++) {
@@ -224,16 +219,16 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
                 }
             }
 
-            Element dmEl = directElement(project, "dependencyManagement");
+            Element dmEl = Dom.directElement(project, "dependencyManagement");
             if (dmEl != null) {
-                Element depsEl = directElement(dmEl, "dependencies");
+                Element depsEl = Dom.directElement(dmEl, "dependencies");
                 if (depsEl != null) {
                     NodeList depNodes = depsEl.getElementsByTagName("dependency");
                     for (int k = 0; k < depNodes.getLength(); k++) {
                         Element dep = (Element) depNodes.item(k);
-                        String dmG = directText(dep, "groupId");
-                        String dmA = directText(dep, "artifactId");
-                        String dmV = directText(dep, "version");
+                        String dmG = Dom.directText(dep, "groupId");
+                        String dmA = Dom.directText(dep, "artifactId");
+                        String dmV = Dom.directText(dep, "version");
                         if (!isBlank(dmG) && !isBlank(dmA) && !isBlank(dmV)) {
                             managed.putIfAbsent(dmG + ":" + dmA, dmV);
                         }
@@ -256,17 +251,17 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
             Document doc = db.parse(pomFile.toFile());
             Element project = doc.getDocumentElement();
 
-            Element dependenciesEl = directElement(project, "dependencies");
+            Element dependenciesEl = Dom.directElement(project, "dependencies");
             if (dependenciesEl == null) continue;
 
             NodeList depNodes = dependenciesEl.getElementsByTagName("dependency");
             for (int j = 0; j < depNodes.getLength(); j++) {
                 Element dep = (Element) depNodes.item(j);
-                String depG = directText(dep, "groupId");
-                String depA = directText(dep, "artifactId");
-                String depV = directText(dep, "version");
-                String depScope = directText(dep, "scope");
-                String depType = directText(dep, "type");
+                String depG = Dom.directText(dep, "groupId");
+                String depA = Dom.directText(dep, "artifactId");
+                String depV = Dom.directText(dep, "version");
+                String depScope = Dom.directText(dep, "scope");
+                String depType = Dom.directText(dep, "type");
 
                 if (isBlank(depG) || isBlank(depA)) continue;
 
@@ -404,7 +399,7 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
                 String reactorKey = artifact.getGroupId() + ":" + artifact.getArtifactId()
                         + ":" + artifact.getVersion();
                 if (reactorCoords.contains(reactorKey)) continue;
-                String ac = artifactCoords(artifact);
+                String ac = Coords.artifactCoords(artifact);
                 byScope.computeIfAbsent(scope, k -> new LinkedHashMap<>()).putIfAbsent(ac, artifact);
                 allCoords.add(ac);
             }
@@ -414,13 +409,13 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
             for (int i = 1; i < pomFiles.size(); i++) {
                 Document doc = db.parse(pomFiles.get(i).toFile());
                 Element project = doc.getDocumentElement();
-                Element buildEl = directElement(project, "build");
+                Element buildEl = Dom.directElement(project, "build");
                 if (buildEl != null) {
-                    collectPluginsFromSection(directElement(buildEl, "plugins"),
+                    collectPluginsFromSection(Dom.directElement(buildEl, "plugins"),
                             pluginCandidates, properties);
-                    Element pmEl = directElement(buildEl, "pluginManagement");
+                    Element pmEl = Dom.directElement(buildEl, "pluginManagement");
                     if (pmEl != null) {
-                        collectPluginsFromSection(directElement(pmEl, "plugins"),
+                        collectPluginsFromSection(Dom.directElement(pmEl, "plugins"),
                                 pluginCandidates, properties);
                     }
                 }
@@ -452,25 +447,25 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
                                 NodeList components = bindingsDoc.getElementsByTagName("component");
                                 for (int i = 0; i < components.getLength(); i++) {
                                     Element comp = (Element) components.item(i);
-                                    String role = directText(comp, "role");
+                                    String role = Dom.directText(comp, "role");
                                     if (!"org.apache.maven.lifecycle.mapping.LifecycleMapping".equals(role)) continue;
-                                    String roleHint = directText(comp, "role-hint");
+                                    String roleHint = Dom.directText(comp, "role-hint");
                                     if (isBlank(roleHint)) continue;
-                                    Element config = directElement(comp, "configuration");
+                                    Element config = Dom.directElement(comp, "configuration");
                                     if (config == null) continue;
                                     List<DefaultArtifact> plugins = new ArrayList<>();
                                     // Newer schema (3.9+): configuration > lifecycles > lifecycle > phases.
-                                    Element lifecycles = directElement(config, "lifecycles");
+                                    Element lifecycles = Dom.directElement(config, "lifecycles");
                                     if (lifecycles != null) {
                                         NodeList lifecycleList = lifecycles.getElementsByTagName("lifecycle");
                                         for (int j = 0; j < lifecycleList.getLength(); j++) {
                                             Element lifecycle = (Element) lifecycleList.item(j);
-                                            Element phases = directElement(lifecycle, "phases");
+                                            Element phases = Dom.directElement(lifecycle, "phases");
                                             if (phases != null) extractPluginsFromPhases(phases, plugins);
                                         }
                                     } else {
                                         // Older schema: configuration > phases.
-                                        Element phases = directElement(config, "phases");
+                                        Element phases = Dom.directElement(config, "phases");
                                         if (phases != null) extractPluginsFromPhases(phases, plugins);
                                     }
                                     bindingsByPackaging.put(roleHint, plugins);
@@ -504,7 +499,7 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
             // ── 2c: Resolve parent POM files and plugin JARs ─────────────────
             Map<String, Artifact> resolvedParentPoms = new LinkedHashMap<>();
             for (DefaultArtifact candidate : parentPomCandidates) {
-                String coords = artifactCoords(candidate);
+                String coords = Coords.artifactCoords(candidate);
                 try {
                     ArtifactRequest req = new ArtifactRequest(candidate, context.remoteRepositories(), null);
                     ArtifactResult result = context.repositorySystem()
@@ -519,7 +514,7 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
             Map<String, Artifact> resolvedPlugins = new LinkedHashMap<>();
             for (Map.Entry<String, DefaultArtifact> entry : pluginCandidates.entrySet()) {
                 DefaultArtifact candidate = entry.getValue();
-                String coords = artifactCoords(candidate);
+                String coords = Coords.artifactCoords(candidate);
                 try {
                     ArtifactRequest req = new ArtifactRequest(candidate, context.remoteRepositories(), null);
                     ArtifactResult result = context.repositorySystem()
@@ -582,7 +577,7 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
                             String reactorKey = depArtifact.getGroupId() + ":"
                                     + depArtifact.getArtifactId() + ":" + depArtifact.getVersion();
                             if (reactorCoords.contains(reactorKey)) continue;
-                            String depCoords = artifactCoords(depArtifact);
+                            String depCoords = Coords.artifactCoords(depArtifact);
                             if (!resolvedPlugins.containsKey(depCoords)) {
                                 resolvedPluginDeps.putIfAbsent(depCoords, depArtifact);
                                 allCoords.add(depCoords);
@@ -597,7 +592,7 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
 
             Map<String, Artifact> resolvedPluginParentPoms = new LinkedHashMap<>();
             for (DefaultArtifact candidate : pluginParentPomCandidates) {
-                String coords = artifactCoords(candidate);
+                String coords = Coords.artifactCoords(candidate);
                 if (resolvedPluginParentPoms.containsKey(coords)) continue;
                 if (resolvedParentPoms.containsKey(coords)) continue;
                 try {
@@ -625,9 +620,9 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
                     NodeList extNodes = extRoot.getElementsByTagName("extension");
                     for (int i = 0; i < extNodes.getLength(); i++) {
                         Element ext = (Element) extNodes.item(i);
-                        String eg = directText(ext, "groupId");
-                        String ea = directText(ext, "artifactId");
-                        String ev = directText(ext, "version");
+                        String eg = Dom.directText(ext, "groupId");
+                        String ea = Dom.directText(ext, "artifactId");
+                        String ev = Dom.directText(ext, "version");
                         if (isBlank(eg) || isBlank(ea) || isBlank(ev)) continue;
                         if (ev.startsWith("${")) {
                             String propName = ev.substring(2, ev.length() - 1);
@@ -648,7 +643,7 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
             // ── 2f: Resolve extension JARs ───────────────────────────────────
             Map<String, Artifact> resolvedExtensions = new LinkedHashMap<>();
             for (DefaultArtifact candidate : extensionCandidates.values()) {
-                String coords = artifactCoords(candidate);
+                String coords = Coords.artifactCoords(candidate);
                 try {
                     ArtifactRequest req = new ArtifactRequest(candidate, context.remoteRepositories(), null);
                     ArtifactResult result = context.repositorySystem()
@@ -711,7 +706,7 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
                                 String reactorKey = depArtifact.getGroupId() + ":"
                                         + depArtifact.getArtifactId() + ":" + depArtifact.getVersion();
                                 if (reactorCoords.contains(reactorKey)) continue;
-                                String depCoords = artifactCoords(depArtifact);
+                                String depCoords = Coords.artifactCoords(depArtifact);
                                 if (!resolvedExtensions.containsKey(depCoords)) {
                                     resolvedExtensionDeps.putIfAbsent(depCoords, depArtifact);
                                     allCoords.add(depCoords);
@@ -727,7 +722,7 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
 
             Map<String, Artifact> resolvedExtensionParentPoms = new LinkedHashMap<>();
             for (DefaultArtifact candidate : extensionParentPomCandidates) {
-                String coords = artifactCoords(candidate);
+                String coords = Coords.artifactCoords(candidate);
                 if (resolvedExtensionParentPoms.containsKey(coords)) continue;
                 if (resolvedParentPoms.containsKey(coords)) continue;
                 if (resolvedPluginParentPoms.containsKey(coords)) continue;
@@ -754,7 +749,7 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
             Artifact resolvedMavenDistribution = null;
             String mavenDistributionCoords = null;
             if (mavenDistroCandidate != null) {
-                String coords = artifactCoords(mavenDistroCandidate);
+                String coords = Coords.artifactCoords(mavenDistroCandidate);
                 try {
                     ArtifactRequest req = new ArtifactRequest(
                             mavenDistroCandidate, context.remoteRepositories(), null);
@@ -865,7 +860,7 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
             print("Analysis results saved to: " + outputFile.toAbsolutePath());
         }
 
-        writer.close();
+        logger.close();
         return 0;
     }
 
@@ -877,9 +872,9 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
         NodeList pluginNodes = pluginsEl.getElementsByTagName("plugin");
         for (int i = 0; i < pluginNodes.getLength(); i++) {
             Element plugin = (Element) pluginNodes.item(i);
-            String pg = directText(plugin, "groupId");
-            String pa = directText(plugin, "artifactId");
-            String pv = directText(plugin, "version");
+            String pg = Dom.directText(plugin, "groupId");
+            String pa = Dom.directText(plugin, "artifactId");
+            String pv = Dom.directText(plugin, "version");
 
             if (isBlank(pg)) pg = "org.apache.maven.plugins";
             if (isBlank(pa)) continue;
@@ -900,7 +895,7 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
     private void collectSubModulePoms(Path pomFile, List<Path> result, DocumentBuilder db) throws Exception {
         Document doc = db.parse(pomFile.toFile());
         Element project = doc.getDocumentElement();
-        Element modules = directElement(project, "modules");
+        Element modules = Dom.directElement(project, "modules");
         if (modules == null) return;
         NodeList moduleNodes = modules.getElementsByTagName("module");
         for (int i = 0; i < moduleNodes.getLength(); i++) {
@@ -911,37 +906,6 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
                 collectSubModulePoms(modulePom, result, db);
             }
         }
-    }
-
-    private String directText(Element parent, String tagName) {
-        Element el = directElement(parent, tagName);
-        return el != null ? el.getTextContent().trim() : null;
-    }
-
-    private Element directElement(Element parent, String tagName) {
-        if (parent == null) return null;
-        NodeList children = parent.getChildNodes();
-        for (int i = 0; i < children.getLength(); i++) {
-            if (children.item(i) instanceof Element el) {
-                String name = el.getLocalName() != null ? el.getLocalName() : el.getTagName();
-                if (tagName.equals(name)) return el;
-            }
-        }
-        return null;
-    }
-
-    private String artifactCoords(Artifact artifact) {
-        String ext = artifact.getExtension();
-        String classifier = artifact.getClassifier();
-        StringBuilder sb = new StringBuilder();
-        sb.append(artifact.getGroupId()).append(':')
-          .append(artifact.getArtifactId()).append(':')
-          .append(isBlank(ext) ? "jar" : ext);
-        if (!isBlank(classifier)) {
-            sb.append(':').append(classifier);
-        }
-        sb.append(':').append(artifact.getVersion());
-        return sb.toString();
     }
 
     private boolean isBlank(String s) {
@@ -969,53 +933,6 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
                     out.add(new DefaultArtifact(g, a, "jar", v));
                 }
             }
-        }
-    }
-
-    /// Parses a Maven repository URL (e.g. the wrapper's distributionUrl) into a Maven
-    /// artifact. Expects the canonical `<groupPath>/<artifactId>/<version>/<filename>` suffix
-    /// and strips common repo-base prefixes (e.g. `maven2/`). Returns `null` if the URL does
-    /// not match the expected layout.
-    private DefaultArtifact artifactFromMavenUrl(String url) {
-        try {
-            String path = URI.create(url).getPath();
-            if (path == null || path.isEmpty()) return null;
-            if (path.startsWith("/")) path = path.substring(1);
-            String[] segs = path.split("/");
-
-            // Strip well-known Maven repository path prefixes so the remaining
-            // segments are groupPath / artifactId / version / filename.
-            int start = 0;
-            if (segs.length > 0 && "maven2".equals(segs[0])) start = 1;
-            else if (segs.length > 1 && "repository".equals(segs[0])) start = 2;
-
-            if (segs.length - start < 4) return null;
-            String filename = segs[segs.length - 1];
-            String version = segs[segs.length - 2];
-            String artifactId = segs[segs.length - 3];
-            String[] groupSegs = Arrays.copyOfRange(segs, start, segs.length - 3);
-            String groupId = String.join(".", groupSegs);
-            if (isBlank(groupId) || isBlank(artifactId) || isBlank(version)) return null;
-
-            String prefix = artifactId + "-" + version;
-            String classifier = null;
-            String ext;
-            if (filename.startsWith(prefix + "-")) {
-                String rest = filename.substring(prefix.length() + 1);
-                int dot = rest.lastIndexOf('.');
-                if (dot <= 0) return null;
-                classifier = rest.substring(0, dot);
-                ext = rest.substring(dot + 1);
-            } else if (filename.startsWith(prefix + ".")) {
-                ext = filename.substring(prefix.length() + 1);
-            } else {
-                return null;
-            }
-            return classifier != null
-                    ? new DefaultArtifact(groupId, artifactId, classifier, ext, version)
-                    : new DefaultArtifact(groupId, artifactId, ext, version);
-        } catch (Exception e) {
-            return null;
         }
     }
 
