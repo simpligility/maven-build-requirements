@@ -54,9 +54,6 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
             description = "Append each artifact's local repository path after its GAV (default: false)")
     private boolean showPaths = false;
 
-    private static final List<String> SCOPE_ORDER =
-            List.of("compile", "runtime", "provided", "test", "system", "import");
-
     private static final DateTimeFormatter DATE_FORMAT =
             DateTimeFormatter.ofPattern("EEE MMM dd HH:mm:ss zzz yyyy", Locale.ENGLISH);
 
