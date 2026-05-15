@@ -13,6 +13,17 @@ public final class Dom {
 
     private Dom() {}
 
+    /// Creates the namespace-unaware, silently-erroring [DocumentBuilder] this project uses
+    /// everywhere. Used by both the orchestrator (for header parsing) and [com.simpligility
+    /// .maven.analysis.AnalysisContext] (for the analyzer-shared builder).
+    public static DocumentBuilder newDocumentBuilder() throws ParserConfigurationException {
+        DocumentBuilderFactory dbf = DocumentBuilderFactory.newInstance();
+        dbf.setNamespaceAware(false);
+        DocumentBuilder db = dbf.newDocumentBuilder();
+        db.setErrorHandler(null);
+        return db;
+    }
+
     public static String directText(Element parent, String tagName) {
         Element el = directElement(parent, tagName);
         return el != null ? el.getTextContent().trim() : null;

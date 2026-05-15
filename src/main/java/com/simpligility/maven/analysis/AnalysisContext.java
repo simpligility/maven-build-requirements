@@ -3,6 +3,7 @@ package com.simpligility.maven.analysis;
 import module java.base;
 import module java.xml;
 
+import com.simpligility.maven.util.Dom;
 import eu.maveniverse.maven.mima.context.Context;
 import eu.maveniverse.maven.mima.extensions.mmr.MavenModelReader;
 
@@ -22,10 +23,7 @@ public record AnalysisContext(
 
     public static AnalysisContext create(Context mima, ProgressLogger logger, Path projectDir)
             throws ParserConfigurationException {
-        DocumentBuilderFactory dbf = DocumentBuilderFactory.newInstance();
-        dbf.setNamespaceAware(false);
-        DocumentBuilder db = dbf.newDocumentBuilder();
-        db.setErrorHandler(null);
-        return new AnalysisContext(mima, new MavenModelReader(mima), logger, db, projectDir);
+        return new AnalysisContext(mima, new MavenModelReader(mima), logger,
+                Dom.newDocumentBuilder(), projectDir);
     }
 }
