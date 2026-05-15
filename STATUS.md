@@ -57,6 +57,94 @@ File shrank from 1060 → 1028 lines.
 - Mass `var` conversion and a text-block summary builder skipped —
   stylistic, not clear modernization wins.
 
+## Monolith split: per-task analyzers
+
+The pending memory note "Refactor analyzer into modules" — split
+the ~900-line `BuildRequirementsAnalyzer` into a thin CLI
+orchestrator plus per-task helpers — is now done. Memory note
+deleted.
+
+End state: `BuildRequirementsAnalyzer.java` went from **1060 to
+129 lines** (~88% reduction). All analysis lives in two new
+packages:
+
+```
+com.simpligility.maven/
+├── BuildRequirementsAnalyzer.java       ← picocli @Command, orchestration, main()
+├── analysis/
+│   ├── AnalysisContext.java             ← mima Context + ModelReader + logger bundle
+│   ├── AnalysisResult.java              ← aggregate of all resolved artifact buckets
+│   ├── ProgressLogger.java              ← print() — stdout + report file tee
+│   ├── ProjectStructure.java            ← record returned by ProjectStructureLoader
+│   ├── MavenEnvironmentDetector.java    ← Step 0
+│   ├── ProjectStructureLoader.java      ← Step 1
+│   ├── EffectiveModelBuilder.java       ← Step 2a (MMR per module + sub-module scan)
+│   ├── DependencyResolver.java          ← Step 2b
+│   ├── LifecyclePluginLoader.java       ← Step 2c0 (maven-core bindings)
+│   ├── PluginAnalyzer.java              ← Steps 2c + 2d
+│   ├── ExtensionAnalyzer.java           ← Steps 2e-2g
+│   ├── MavenDistributionResolver.java   ← Step 2h
+│   └── ReportWriter.java                ← Step 3 + summary + coords file write
+└── util/
+    ├── Dom.java                         ← directText/directElement + DocumentBuilder factory
+    └── Coords.java                      ← artifactCoords + artifactFromMavenUrl
+```
+
+Delivered as **9 commits** against `master`
+(`f6b9af7..123fcc6`), each independently buildable and verified
+against the `quickstart-example` IT fixture for byte-identical
+output (date/path lines aside):
+
+1. Extract `ProgressLogger`, `Dom`, `Coords` utilities (pure
+   extraction).
+2. Add `AnalysisContext` + `AnalysisResult` skeleton (types only,
+   no callers).
+3. Extract `MavenEnvironmentDetector` (Step 0).
+4. Extract `ProjectStructureLoader` (Step 1).
+5. Extract `EffectiveModelBuilder` + `DependencyResolver`
+   (Steps 2a + 2b).
+6. Extract `LifecyclePluginLoader` + `PluginAnalyzer`
+   (Steps 2c0 + 2c + 2d).
+7. Extract `ExtensionAnalyzer` + `MavenDistributionResolver`
+   (Steps 2e-2h).
+8. Extract `ReportWriter` (Step 3 + summary + coords file).
+9. Slim `BuildRequirementsAnalyzer` to the CLI orchestrator —
+   drop dead locals, `print`/`printArtifactLine`/`isBlank` wrappers,
+   move report banner into `printHeader`, replace inline
+   `DocumentBuilderFactory` setup with `Dom.newDocumentBuilder()`,
+   wrap `ProgressLogger` in try-with-resources, trim unused imports.
+
+### Design choices that landed
+
+- **Analyzers thread products through return values** rather than
+  sharing mutable analysis state. `AnalysisContext` only holds
+  *infrastructure* (mima `Context`, `MavenModelReader`,
+  `ProgressLogger`, shared `DocumentBuilder`, `projectDir`);
+  results travel as `EffectiveModelBuilder.Result`,
+  `ProjectStructure`, etc.
+- **`AnalysisResult` is the single aggregate.** Mutators
+  (`addDependency`, `addPlugin`, …) auto-update the sorted
+  `allCoords` set so the coords-file write is a one-liner.
+- **`AnalysisContext` holds the mima `Context` directly** rather
+  than wrapping it behind narrow interfaces. Pragmatic — every
+  resolver needs `remoteRepositories()` /
+  `repositorySystem()` / `repositorySystemSession()` anyway, and
+  this isn't a library where leakage matters.
+- **`MavenEnvironmentDetector` takes `(ProgressLogger, Path)`**
+  rather than `AnalysisContext`. Skips opening mima for Step 0,
+  which doesn't need it — and avoids re-indenting 200 lines of
+  Steps 1-3 just to move them inside an earlier
+  try-with-resources.
+
+### Verified
+
+Final sweep against all three IT fixtures — counts match the
+documented 2026-05-14 baselines exactly:
+
+- `quickstart-example`: **435** artifacts
+- `multi-module-example`: **394** artifacts
+- `spring-boot-example`: **822** artifacts
+
 ---
 
 # Status report — 2026-05-14
