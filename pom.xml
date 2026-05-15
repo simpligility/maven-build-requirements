@@ -15,8 +15,8 @@
     <properties>
         <maven.compiler.release>25</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <mima.version>2.4.25</mima.version>
-        <toolbox.version>0.9.0</toolbox.version>
+        <mima.version>2.4.43</mima.version>
+        <toolbox.version>0.15.9</toolbox.version>
     </properties>
 
     <dependencies>
