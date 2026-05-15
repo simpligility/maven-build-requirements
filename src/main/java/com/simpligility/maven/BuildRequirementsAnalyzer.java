@@ -1,5 +1,8 @@
 package com.simpligility.maven;
 
+import module java.base;
+import module java.xml;
+
 import eu.maveniverse.maven.mima.context.Context;
 import eu.maveniverse.maven.mima.context.ContextOverrides;
 import eu.maveniverse.maven.mima.context.Runtime;
@@ -21,32 +24,17 @@ import org.eclipse.aether.resolution.ArtifactRequest;
 import org.eclipse.aether.resolution.ArtifactResult;
 import org.eclipse.aether.resolution.DependencyRequest;
 import org.eclipse.aether.util.graph.visitor.PreorderNodeListGenerator;
-import org.w3c.dom.Document;
-import org.w3c.dom.Element;
-import org.w3c.dom.NodeList;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 
-import javax.xml.parsers.DocumentBuilder;
-import javax.xml.parsers.DocumentBuilderFactory;
-import java.io.File;
-import java.io.PrintWriter;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.util.*;
-import java.util.concurrent.Callable;
-
-/**
- * Analyzes a Maven project's dependencies, plugins, and parent POMs and writes the resolved
- * artifact coordinates and a human-readable report to disk.
- *
- * <p>Run from the root directory of the Maven project to analyze.
- *
- * <p>Uses <a href="https://maveniverse.eu/docs/mima/">mima</a> to bootstrap Maven Resolver
- * and the MMR extension to compute effective POM models (parent inheritance, plugin management).
- */
+/// Analyzes a Maven project's dependencies, plugins, and parent POMs and writes the resolved
+/// artifact coordinates and a human-readable report to disk.
+///
+/// Run from the root directory of the Maven project to analyze.
+///
+/// Uses [mima](https://maveniverse.eu/docs/mima/) to bootstrap Maven Resolver and the MMR
+/// extension to compute effective POM models (parent inheritance, plugin management).
 @Command(
         name = "build-requirements-analyzer",
         description = "Analyzes Maven project dependencies, plugins, and parent POMs.",
@@ -56,11 +44,11 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
 
     @Option(names = {"-p", "--project"},
             description = "Project directory containing pom.xml (default: current directory)")
-    private Path projectDir = Paths.get(".");
+    private Path projectDir = Path.of(".");
 
     @Option(names = {"-o", "--output"},
             description = "Output file (default: maven-build-requirements-results.txt)")
-    private Path outputFile = Paths.get("maven-build-requirements-results.txt");
+    private Path outputFile = Path.of("maven-build-requirements-results.txt");
 
     @Option(names = {"--paths"},
             description = "Append each artifact's local repository path after its GAV (default: false)")
@@ -68,6 +56,9 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
 
     private static final List<String> SCOPE_ORDER =
             List.of("compile", "runtime", "provided", "test", "system", "import");
+
+    private static final DateTimeFormatter DATE_FORMAT =
+            DateTimeFormatter.ofPattern("EEE MMM dd HH:mm:ss zzz yyyy", Locale.ENGLISH);
 
     private PrintWriter writer;
 
@@ -117,7 +108,7 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
 
         print("Maven build requirements analysis");
         print("");
-        print("Date: " + new Date());
+        print("Date: " + ZonedDateTime.now().format(DATE_FORMAT));
         print("Project: " + projectDir.toAbsolutePath().normalize());
         print("Group ID: " + headerGroupId);
         print("Artifact ID: " + headerArtifactId);
@@ -175,7 +166,7 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
                         mavenVersionSource = "'mvn --version' on PATH";
                     }
                 }
-            } catch (Exception ignored) {
+            } catch (Exception _) {
                 // fall through to the no-version-detected case
             }
         }
@@ -454,12 +445,12 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
                             .resolveArtifact(context.repositorySystemSession(), req);
                     File coreJar = result.getArtifact().getFile();
                     Map<String, List<DefaultArtifact>> bindingsByPackaging = new LinkedHashMap<>();
-                    try (java.util.jar.JarFile jar = new java.util.jar.JarFile(coreJar)) {
-                        java.util.jar.JarEntry entry = jar.getJarEntry("META-INF/plexus/default-bindings.xml");
+                    try (JarFile jar = new JarFile(coreJar)) {
+                        JarEntry entry = jar.getJarEntry("META-INF/plexus/default-bindings.xml");
                         if (entry == null) {
                             print("  Warning: default-bindings.xml not found in maven-core JAR.");
                         } else {
-                            try (java.io.InputStream is = jar.getInputStream(entry)) {
+                            try (InputStream is = jar.getInputStream(entry)) {
                                 Document bindingsDoc = db.parse(is);
                                 NodeList components = bindingsDoc.getElementsByTagName("component");
                                 for (int i = 0; i < components.getLength(); i++) {
@@ -785,73 +776,55 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
             // ── Step 3: Print resolved artifact lists ─────────────────────────
             print("Resolved dependencies:");
             print("");
-            for (Map<String, Artifact> scopeArtifacts : byScope.values()) {
-                for (Map.Entry<String, Artifact> e : scopeArtifacts.entrySet()) {
-                    printArtifactLine(e.getKey(), e.getValue());
-                }
-            }
+            byScope.values().forEach(scope -> scope.forEach(this::printArtifactLine));
             print("");
 
             if (!resolvedParentPoms.isEmpty()) {
                 print("Parent POMs:");
                 print("");
-                for (Map.Entry<String, Artifact> e : resolvedParentPoms.entrySet()) {
-                    printArtifactLine(e.getKey(), e.getValue());
-                }
+                resolvedParentPoms.forEach(this::printArtifactLine);
                 print("");
             }
 
             if (!resolvedPlugins.isEmpty()) {
                 print("Plugins:");
                 print("");
-                for (Map.Entry<String, Artifact> e : resolvedPlugins.entrySet()) {
-                    printArtifactLine(e.getKey(), e.getValue());
-                }
+                resolvedPlugins.forEach(this::printArtifactLine);
                 print("");
             }
 
             if (!resolvedPluginParentPoms.isEmpty()) {
                 print("Plugin parent POMs:");
                 print("");
-                for (Map.Entry<String, Artifact> e : resolvedPluginParentPoms.entrySet()) {
-                    printArtifactLine(e.getKey(), e.getValue());
-                }
+                resolvedPluginParentPoms.forEach(this::printArtifactLine);
                 print("");
             }
 
             if (!resolvedPluginDeps.isEmpty()) {
                 print("Plugin dependencies:");
                 print("");
-                for (Map.Entry<String, Artifact> e : resolvedPluginDeps.entrySet()) {
-                    printArtifactLine(e.getKey(), e.getValue());
-                }
+                resolvedPluginDeps.forEach(this::printArtifactLine);
                 print("");
             }
 
             if (!resolvedExtensions.isEmpty()) {
                 print("Extensions:");
                 print("");
-                for (Map.Entry<String, Artifact> e : resolvedExtensions.entrySet()) {
-                    printArtifactLine(e.getKey(), e.getValue());
-                }
+                resolvedExtensions.forEach(this::printArtifactLine);
                 print("");
             }
 
             if (!resolvedExtensionParentPoms.isEmpty()) {
                 print("Extension parent POMs:");
                 print("");
-                for (Map.Entry<String, Artifact> e : resolvedExtensionParentPoms.entrySet()) {
-                    printArtifactLine(e.getKey(), e.getValue());
-                }
+                resolvedExtensionParentPoms.forEach(this::printArtifactLine);
                 print("");
             }
 
             if (!resolvedExtensionDeps.isEmpty()) {
                 print("Extension dependencies:");
                 print("");
-                for (Map.Entry<String, Artifact> e : resolvedExtensionDeps.entrySet()) {
-                    printArtifactLine(e.getKey(), e.getValue());
-                }
+                resolvedExtensionDeps.forEach(this::printArtifactLine);
                 print("");
             }
 
@@ -899,7 +872,7 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
         return 0;
     }
 
-    /** Collects explicitly-versioned plugins from a DOM {@code <plugins>} element. */
+    /// Collects explicitly-versioned plugins from a DOM `<plugins>` element.
     private void collectPluginsFromSection(Element pluginsEl,
                                            Map<String, DefaultArtifact> pluginCandidates,
                                            Map<String, String> properties) {
@@ -978,12 +951,9 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
         return s == null || s.isBlank();
     }
 
-    /**
-     * Extracts plugin coordinates from a {@code <phases>} element in
-     * {@code default-bindings.xml}. Each phase child element's text is one or
-     * more comma-separated mojo coordinates ({@code g:a:v:goal}); we keep the
-     * GAV and dedupe per phases block by {@code g:a}.
-     */
+    /// Extracts plugin coordinates from a `<phases>` element in `default-bindings.xml`.
+    /// Each phase child element's text is one or more comma-separated mojo coordinates
+    /// (`g:a:v:goal`); we keep the GAV and dedupe per phases block by `g:a`.
     private void extractPluginsFromPhases(Element phases, List<DefaultArtifact> out) {
         NodeList children = phases.getChildNodes();
         Set<String> seen = new LinkedHashSet<>();
@@ -1005,15 +975,13 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
         }
     }
 
-    /**
-     * Parses a Maven repository URL (e.g. the wrapper's distributionUrl) into a
-     * Maven artifact. Expects the canonical {@code <groupPath>/<artifactId>/<version>/<filename>}
-     * suffix and strips common repo-base prefixes (e.g. {@code maven2/}).
-     * Returns {@code null} if the URL does not match the expected layout.
-     */
+    /// Parses a Maven repository URL (e.g. the wrapper's distributionUrl) into a Maven
+    /// artifact. Expects the canonical `<groupPath>/<artifactId>/<version>/<filename>` suffix
+    /// and strips common repo-base prefixes (e.g. `maven2/`). Returns `null` if the URL does
+    /// not match the expected layout.
     private DefaultArtifact artifactFromMavenUrl(String url) {
         try {
-            String path = java.net.URI.create(url).getPath();
+            String path = URI.create(url).getPath();
             if (path == null || path.isEmpty()) return null;
             if (path.startsWith("/")) path = path.substring(1);
             String[] segs = path.split("/");
@@ -1028,7 +996,7 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
             String filename = segs[segs.length - 1];
             String version = segs[segs.length - 2];
             String artifactId = segs[segs.length - 3];
-            String[] groupSegs = java.util.Arrays.copyOfRange(segs, start, segs.length - 3);
+            String[] groupSegs = Arrays.copyOfRange(segs, start, segs.length - 3);
             String groupId = String.join(".", groupSegs);
             if (isBlank(groupId) || isBlank(artifactId) || isBlank(version)) return null;
 

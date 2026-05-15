@@ -1,3 +1,64 @@
+# Status report — 2026-05-15
+
+## Toolchain bumps
+
+- Minimum Java raised to **25** (`maven.compiler.release=25`; README
+  requirement updated). Build verified against Temurin 26.
+- `mima` `2.4.25` → `2.4.43`. No source changes.
+- `toolbox` `0.9.0` → `0.15.9` (large jump). No source changes needed —
+  the `shared` API surface we use is stable across the range. Verified by
+  running the analyzer end-to-end against `quickstart-example` (435
+  artifacts, identical to the pre-bump output).
+
+## Java 25 modernization of `BuildRequirementsAnalyzer`
+
+Surface-level style/feature updates only — no architectural changes
+(the monolith-split refactor stays in the memory backlog).
+
+- **JEP 511 module imports**: 13 individual JDK imports replaced with
+  `import module java.base;` and `import module java.xml;`. Drops
+  `java.io.*`, `java.nio.file.*`, `java.util.*`, `java.util.concurrent.*`,
+  `java.util.jar.*`, `javax.xml.parsers.*`, and `org.w3c.dom.*` lines.
+- **JEP 467 markdown Javadoc**: class-level + 3 method-level comment
+  blocks converted from HTML `<p>`/`<a>`/`{@code …}` to `///` markdown
+  with `[text](url)` links and backtick code spans.
+- **Modern stdlib factories**: `Paths.get(...)` → `Path.of(...)`,
+  `new Date()` → `ZonedDateTime.now().format(DATE_FORMAT)`. Date format
+  preserved exactly (`EEE MMM dd HH:mm:ss zzz yyyy`, `Locale.ENGLISH` to
+  keep `PDT`-style zone abbreviations — `Locale.ROOT` falls back to
+  GMT-offset because it lacks localized zone names).
+- **`Map.forEach(this::printArtifactLine)`**: 8 repeated
+  `for (Map.Entry<String, Artifact> e : map.entrySet())` blocks collapsed
+  to one-liners using the `BiConsumer` overload.
+- **JEP 456 unnamed variable**: `catch (Exception ignored)` →
+  `catch (Exception _)`.
+- **FQN cleanups** now covered by module imports:
+  `java.util.jar.JarFile/JarEntry`, `java.io.InputStream`,
+  `java.net.URI.create`, `java.util.Arrays.copyOfRange` — all bare.
+
+File shrank from 1060 → 1028 lines.
+
+### Verified
+
+- `./mvnw clean package` succeeds, no preview-feature warnings (every
+  feature used is final in JDK 25).
+- `java -jar target/maven-build-requirements-1.0-SNAPSHOT.jar -p
+  src/it/projects/quickstart-example` produces the same 435-artifact
+  count and the same `Fri May 15 ... PDT 2026` date format as before
+  the changes.
+
+### Notes / non-changes
+
+- `SCOPE_ORDER` is still declared but unused. Not removed here — it
+  belongs with the upcoming monolith split.
+- `for (int i = 0; i < nodeList.getLength(); i++)` over W3C `NodeList`
+  is unchanged: no clean stdlib iterator/stream exists without a
+  helper, and that's refactoring territory.
+- Mass `var` conversion and a text-block summary builder skipped —
+  stylistic, not clear modernization wins.
+
+---
+
 # Status report — 2026-05-14
 
 ## Refactor: project layout and chainctl removal
