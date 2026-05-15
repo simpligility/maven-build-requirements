@@ -197,6 +197,25 @@ super POM filled in for explicitly-declared-but-version-less
 plugins — would still require deeper mima plumbing; left as a
 follow-up.
 
+## Documentation: README expansion
+
+- New first-class scope statement in the intro: lists the five
+  things the analyzer covers (project transitive tree, plugins +
+  their parents + their trees, lifecycle plugins, extensions,
+  parent POM lineage, Maven distribution) and frames the project
+  tree explicitly as "the same set `mvn dependency:tree`
+  produces" so readers see immediately what the *additional* value
+  is. The "uses mima" implementation-detail paragraph that used to
+  live here is gone.
+- New **Limitations** section calling out plugin `<dependencies>`
+  overrides not honored, the partial cross-version super POM fix,
+  the populated-local-cache prerequisite, profile activation on
+  the analyzer's machine vs. the build machine, and Maven 4 not
+  yet validated.
+- New **Thanks** section at the bottom crediting mima and
+  Maveniverse, with a one-paragraph note on what mima + MMR do for
+  this tool.
+
 ## Outstanding tasks
 
 Carried forward from prior entries plus a few items surfaced
@@ -204,6 +223,15 @@ during today's work. Nothing here is blocking.
 
 ### Open
 
+- **Plugin `<dependencies>` overrides**: a project can inject extra
+  dependencies into a plugin via `<plugin><dependencies>...` in its
+  effective POM. `PluginAnalyzer` currently walks each plugin's
+  *published* POM to build its dep tree, so these overrides aren't
+  reflected in the analyzer's output. To fix, the per-plugin tree
+  walk needs to also pull `<dependencies>` from the plugin's
+  configuration in the project's effective model and merge them
+  into the direct-deps list for that plugin's resolution. Listed
+  as a Limitation in the README too.
 - **Super POM override semantics**: `SuperPomLoader` now merges
   super POM plugins into the candidate map for the wrapper-version,
   but doesn't *override* mima's bundled-super-POM defaults that
