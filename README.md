@@ -17,7 +17,7 @@ each plugin's own transitive dependencies and parent lineage.
 ## Requirements
 
 - [Apache Maven](https://maven.apache.org/) 3.9+ on your `PATH`
-- JDK 21+ to build and run
+- JDK 25+ to build and run
 - A successfully built Maven project with dependencies resolved to the local cache
 
 ## Building

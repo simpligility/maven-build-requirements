@@ -13,7 +13,7 @@
     <description>Analyzes Maven project dependencies, plugins, and parent POMs and writes the resolved artifact coordinates and a human-readable report.</description>
 
     <properties>
-        <maven.compiler.release>21</maven.compiler.release>
+        <maven.compiler.release>25</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <mima.version>2.4.25</mima.version>
         <toolbox.version>0.9.0</toolbox.version>
