@@ -15,6 +15,7 @@ import com.simpligility.maven.analysis.PluginAnalyzer;
 import com.simpligility.maven.analysis.ProgressLogger;
 import com.simpligility.maven.analysis.ProjectStructure;
 import com.simpligility.maven.analysis.ProjectStructureLoader;
+import com.simpligility.maven.analysis.ReportWriter;
 import com.simpligility.maven.util.Coords;
 import com.simpligility.maven.util.Dom;
 import eu.maveniverse.maven.mima.context.Context;
@@ -137,8 +138,6 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
 
         Runtime runtime = Runtimes.INSTANCE.getRuntime();
         Path coordsFile = outputFile.resolveSibling("maven-build-requirements-coords.txt");
-        TreeSet<String> allCoords = new TreeSet<>();
-
         try (Context context = runtime.create(
                 ContextOverrides.create().withUserSettings(true).build())) {
 
@@ -170,101 +169,8 @@ public class BuildRequirementsAnalyzer implements Callable<Integer> {
             // ── 2h: Maven wrapper distribution ───────────────────────────────
             new MavenDistributionResolver(analysisCtx).resolve(mavenDistroCandidate, analysis);
 
-            // ── Step 3: Print resolved artifact lists ─────────────────────────
-            print("Resolved dependencies:");
-            print("");
-            analysis.dependenciesByScope().values().forEach(
-                    scope -> scope.forEach(logger::printArtifactLine));
-            print("");
-
-            if (!analysis.parentPoms().isEmpty()) {
-                print("Parent POMs:");
-                print("");
-                analysis.parentPoms().forEach(this::printArtifactLine);
-                print("");
-            }
-
-            if (!analysis.plugins().isEmpty()) {
-                print("Plugins:");
-                print("");
-                analysis.plugins().forEach(this::printArtifactLine);
-                print("");
-            }
-
-            if (!analysis.pluginParentPoms().isEmpty()) {
-                print("Plugin parent POMs:");
-                print("");
-                analysis.pluginParentPoms().forEach(this::printArtifactLine);
-                print("");
-            }
-
-            if (!analysis.pluginDeps().isEmpty()) {
-                print("Plugin dependencies:");
-                print("");
-                analysis.pluginDeps().forEach(this::printArtifactLine);
-                print("");
-            }
-
-            if (!analysis.extensions().isEmpty()) {
-                print("Extensions:");
-                print("");
-                analysis.extensions().forEach(this::printArtifactLine);
-                print("");
-            }
-
-            if (!analysis.extensionParentPoms().isEmpty()) {
-                print("Extension parent POMs:");
-                print("");
-                analysis.extensionParentPoms().forEach(this::printArtifactLine);
-                print("");
-            }
-
-            if (!analysis.extensionDeps().isEmpty()) {
-                print("Extension dependencies:");
-                print("");
-                analysis.extensionDeps().forEach(this::printArtifactLine);
-                print("");
-            }
-
-            if (analysis.mavenDistribution() != null) {
-                print("Maven distribution:");
-                print("");
-                printArtifactLine(analysis.mavenDistributionCoords(), analysis.mavenDistribution());
-                print("");
-            }
-
-            print("=======================================================================");
-            print("");
-
-            int depCount = analysis.dependencyCount();
-            int mavenDistCount = analysis.mavenDistribution() != null ? 1 : 0;
-            int artifactCount = depCount + analysis.parentPoms().size() + analysis.plugins().size()
-                    + analysis.pluginParentPoms().size() + analysis.pluginDeps().size()
-                    + analysis.extensions().size() + analysis.extensionParentPoms().size()
-                    + analysis.extensionDeps().size() + mavenDistCount;
-            StringBuilder summary = new StringBuilder("Found ").append(artifactCount)
-                    .append(" artifact(s) (")
-                    .append(depCount).append(" project deps, ")
-                    .append(analysis.parentPoms().size()).append(" project parent POMs, ")
-                    .append(analysis.plugins().size()).append(" plugins, ")
-                    .append(analysis.pluginParentPoms().size()).append(" plugin parent POMs, ")
-                    .append(analysis.pluginDeps().size()).append(" plugin deps, ")
-                    .append(analysis.extensions().size()).append(" extensions, ")
-                    .append(analysis.extensionParentPoms().size()).append(" extension parent POMs, ")
-                    .append(analysis.extensionDeps().size()).append(" extension deps");
-            if (mavenDistCount > 0) {
-                summary.append(", ").append(mavenDistCount).append(" Maven distribution");
-            }
-            summary.append(").");
-            print(summary.toString());
-            print("");
-
-            allCoords.addAll(analysis.allCoords());
-            Files.write(coordsFile, allCoords);
-            print("Coordinates saved to:  " + coordsFile.toAbsolutePath());
-            print("");
-
-            print("Analysis results saved to: " + outputFile.toAbsolutePath());
+            // ── Step 3: Print resolved artifact lists + write coords file ────
+            new ReportWriter(logger, outputFile, coordsFile).write(analysis);
         }
 
         logger.close();
