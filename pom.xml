@@ -55,7 +55,7 @@
         <dependency>
             <groupId>org.apache.maven</groupId>
             <artifactId>maven-model</artifactId>
-            <version>3.9.9</version>
+            <version>3.9.16</version>
         </dependency>
         <!-- Required by mima standalone-static: XML parsing split from plexus-utils in Maven 3.9+ -->
         <dependency>

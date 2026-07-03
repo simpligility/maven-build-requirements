@@ -4,7 +4,7 @@ import module java.base;
 
 import org.eclipse.aether.artifact.Artifact;
 
-/// Step 3 of the analysis: prints the structured artifact lists and the summary line, then
+/// Step 3 of the analysis: prints the structured artifact lists and the summary block, then
 /// writes the sorted coords file. Reads from [AnalysisResult]; prints via the
 /// [ProgressLogger] in [AnalysisContext] so the report file gets the same content the user
 /// sees on stdout.
@@ -33,7 +33,7 @@ public final class ReportWriter {
 
         logger.print("=======================================================================");
         logger.print("");
-        logger.print(summaryLine(result));
+        summaryLines(result).forEach(logger::print);
         logger.print("");
 
         Files.write(coordsFile, result.allCoords());
@@ -66,22 +66,21 @@ public final class ReportWriter {
         logger.print("");
     }
 
-    private static String summaryLine(AnalysisResult result) {
+    private static List<String> summaryLines(AnalysisResult result) {
         int mavenDistCount = result.mavenDistribution() != null ? 1 : 0;
-        StringBuilder summary = new StringBuilder("Found ")
-                .append(result.totalArtifactCount()).append(" artifact(s) (")
-                .append(result.dependencyCount()).append(" project deps, ")
-                .append(result.parentPoms().size()).append(" project parent POMs, ")
-                .append(result.plugins().size()).append(" plugins, ")
-                .append(result.pluginParentPoms().size()).append(" plugin parent POMs, ")
-                .append(result.pluginDeps().size()).append(" plugin deps, ")
-                .append(result.extensions().size()).append(" extensions, ")
-                .append(result.extensionParentPoms().size()).append(" extension parent POMs, ")
-                .append(result.extensionDeps().size()).append(" extension deps");
+        List<String> summary = new ArrayList<>();
+        summary.add("Found " + result.totalArtifactCount() + " artifact(s):");
+        summary.add("- " + result.dependencyCount() + " project deps");
+        summary.add("- " + result.parentPoms().size() + " project parent POMs");
+        summary.add("- " + result.plugins().size() + " plugins");
+        summary.add("- " + result.pluginParentPoms().size() + " plugin parent POMs");
+        summary.add("- " + result.pluginDeps().size() + " plugin deps");
+        summary.add("- " + result.extensions().size() + " extensions");
+        summary.add("- " + result.extensionParentPoms().size() + " extension parent POMs");
+        summary.add("- " + result.extensionDeps().size() + " extension deps");
         if (mavenDistCount > 0) {
-            summary.append(", ").append(mavenDistCount).append(" Maven distribution");
+            summary.add("- " + mavenDistCount + " Maven distribution");
         }
-        summary.append(").");
-        return summary.toString();
+        return summary;
     }
 }
