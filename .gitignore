@@ -15,6 +15,14 @@ maven-build-requirements-results.txt
 src/it/projects/**/maven-build-requirements-results.txt
 src/it/projects/**/maven-build-requirements-coords.txt
 
+# Dependency graph output (generated at runtime)
+maven-build-requirements-graph.dot
+maven-build-requirements-graph.svg
+maven-build-requirements-graph.png
+src/it/projects/**/maven-build-requirements-graph.dot
+src/it/projects/**/maven-build-requirements-graph.svg
+src/it/projects/**/maven-build-requirements-graph.png
+
 # IDE files
 .idea/
 *.iml

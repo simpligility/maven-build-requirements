@@ -37,6 +37,11 @@ just the runtime/compile dependency tree:
 - JDK 25+ to build and run
 - A successfully built Maven project with dependencies resolved to the local cache
 
+Optional, only for the dependency graph:
+
+- Python 3 and [Graphviz](https://graphviz.org/) on `PATH`
+- `pngquant` or ImageMagick to shrink the rendered PNG, if you want a smaller file
+
 ## Building
 
 ```bash
@@ -60,6 +65,33 @@ Flags:
 
 The tool also writes a sorted, deduplicated list of artifact coordinates to
 `maven-build-requirements-coords.txt` alongside the report.
+
+## Dependency graph
+
+`graph/build-graph.py` turns an analysis result into a Graphviz graph of the
+build requirements, and `graph/render.sh` renders it to SVG and PNG. The project
+sits at the center with one hub per requirement category — declared and
+transitive project dependencies, plugins with their parent POMs and
+dependencies, extensions, and the Maven distribution — and every required
+artifact hangs off its category hub. This makes the gap between the handful of
+declared dependencies and the full build footprint obvious at a glance.
+
+Point it at a directory you have already analyzed:
+
+```bash
+graph/render.sh path/to/project
+```
+
+Outputs land next to the analyzer's result and coords files:
+
+- `maven-build-requirements-graph.dot` — always
+- `maven-build-requirements-graph.svg` — with a coordinate tooltip per node
+- `maven-build-requirements-graph.png` — sized for a blog-width hero image
+
+Building the DOT needs only Python 3; the SVG and PNG also need Graphviz on
+`PATH`. The edges are category membership, not Maven resolution edges: the
+result file carries no parent or child relationships, so no dependency arrows
+are implied.
 
 ## Limitations
 
@@ -109,7 +141,10 @@ To build the analyzer and run it against all three test projects in one go:
 The script packages the analyzer with `./mvnw package` and then invokes it
 in each test project's directory, leaving `maven-build-requirements-results.txt`
 and `maven-build-requirements-coords.txt` next to that project's `pom.xml`
-(overwriting any existing files there).
+(overwriting any existing files there). When Python 3 and Graphviz are
+available it also writes the `maven-build-requirements-graph.{dot,svg,png}`
+files described in [Dependency graph](#dependency-graph); otherwise it prints a
+note and moves on.
 
 ## Thanks
 

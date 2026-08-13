@@ -18,5 +18,15 @@ JAR="$(pwd)/target/maven-build-requirements.jar"
 for project in quickstart-example multi-module-example spring-boot-example; do
     echo
     echo "=== $project ==="
-    (cd "src/it/projects/$project" && java -jar "$JAR" -p .)
+    dir="src/it/projects/$project"
+    (cd "$dir" && java -jar "$JAR" -p .)
+
+    # Best-effort dependency graph next to the results and coords files.
+    # Skips cleanly when python3 or Graphviz is missing, so the analysis
+    # sweep never fails just because the graph tooling is not installed.
+    if command -v python3 >/dev/null 2>&1; then
+        ./graph/render.sh "$dir" || echo "  graph generation skipped"
+    else
+        echo "  python3 not found; skipping graph generation"
+    fi
 done
