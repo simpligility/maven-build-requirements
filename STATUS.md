@@ -1,3 +1,47 @@
+# Status report — 2026-08-13
+
+## Dependency graph tooling
+
+Added `graph/build-graph.py` and `graph/render.sh` to visualize a
+project's build requirements as a Graphviz hairball. `build-graph.py`
+parses `maven-build-requirements-results.txt` and the project's
+`pom.xml` and emits `maven-build-requirements-graph.dot`; `render.sh`
+runs it and renders `.svg` and `.png` next to the results and coords
+files.
+
+- Project at the center, one hub per requirement category. Project
+  dependencies are split into the ones declared in the pom and the
+  transitive remainder, so the graph shows a handful of declared
+  dependencies fanning out to the full footprint. The three plugin
+  categories share a warm palette and are tied together; everything
+  else is muted cool so the eye lands on the plugin mass.
+- Edges are category membership, not resolution edges — the result
+  file has no parent/child data. Documented as such.
+- Best-effort: `analyze-test-projects.sh` now generates a graph per
+  fixture, skipping cleanly when Python 3 or Graphviz is missing so the
+  analysis sweep never fails on a missing dependency.
+- The PNG is 1340px wide and palette-shrunk with pngquant or ImageMagick
+  when present, about 85KB for `spring-boot-example`.
+- Generated `maven-build-requirements-graph.*` files are gitignored
+  alongside the existing results and coords output.
+
+Requirements gained an optional Python 3 plus Graphviz entry, and the
+README gained a "Dependency graph" section.
+
+The tooling originated in the simpligility-website repo for the blog
+post "Sooo many Maven dependencies!" and is upstreamed here so a run
+emits the graph directly.
+
+### Verified
+
+- `python3 graph/build-graph.py src/it/projects/spring-boot-example`
+  reports 652 artifacts and writes the DOT.
+- `graph/render.sh` renders SVG and PNG with Graphviz on `PATH`, and
+  degrades to DOT-only with a clear message when `fdp` is absent.
+- `bash -n` clean on `analyze-test-projects.sh` and `graph/render.sh`.
+
+---
+
 # Status report — 2026-05-15
 
 ## Toolchain bumps
