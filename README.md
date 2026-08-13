@@ -24,6 +24,14 @@ just the runtime/compile dependency tree:
 - The project's own parent POM lineage.
 - The Maven binary distribution declared by the project's wrapper.
 
+## Learn more
+
+- The blog post
+  [Sooo many Maven dependencies!](https://simpligility.ca/2026/08/sooo-many-maven-dependencies/)
+  covers the motivation for this tool and walks through the surprising results.
+- [Manfred mentors episode 13](https://www.youtube.com/watch?v=-JuCNsyQXIg)
+  demonstrates the tool in detail.
+
 ## Requirements
 
 - JDK 25+ to build and run
